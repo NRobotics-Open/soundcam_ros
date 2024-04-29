@@ -1,2 +1,4 @@
 ### VisualStudioCode ###
-.vscode/*      # Maybe .vscode/**/* instead - see comments
+.vscode/
+**/__python_cache__/
+scripts/__pycache__/
