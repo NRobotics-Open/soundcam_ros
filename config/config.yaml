@@ -1,0 +1,54 @@
+#camera parameters
+ip: '169.254.169.138'
+port: 6340
+protocol: 3
+bulk_config: True
+use_ros: True
+
+#streaming parameters
+camera_width: 320
+camera_height: 240
+video_framerate: 30 #fps
+acousticimage_framerate: 30 #fps
+minimum_freq_range: 3000
+maximum_freq_range: 10000
+distance: 1000 #mm
+
+publish_video: True
+publish_acoustic_video: True
+publish_spectrum: True
+publish_audio: True
+publish_thermal: True
+
+#post-processing
+publish_video_acoustic_overlay: False
+
+#visualization parameters
+visualize_audio: False
+minimum_value: -300000
+maximum_value: 300000
+
+visualize_video: False
+
+visualize_acoustic_video: False
+minimum_db: 0
+maximum_db: 100
+
+visualize_spectrum: False
+minimum_frequency: -120
+maximum_frequency: 120
+
+
+#camera topics
+camera_topic: /state
+
+#service servers
+server_name: /SoundcamServer
+
+#stream topics
+video_topic: /video
+acousticvideo_topic: /video/acoustic
+spectrum_topic: /spectrum
+audio_topic: /audio
+thermalvideo_topic: /video/thermal
+
