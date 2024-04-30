@@ -6,8 +6,8 @@ bulk_config: True
 use_ros: True
 
 #streaming parameters
-camera_width: 320
-camera_height: 240
+camera_width: 640
+camera_height: 480
 video_framerate: 30 #fps
 acousticimage_framerate: 30 #fps
 minimum_freq_range: 3000

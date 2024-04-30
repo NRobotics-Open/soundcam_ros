@@ -618,11 +618,19 @@ class CameraProtocol(object):
     
     def unpackDataMessage(self, response:bytes)->DataMessages.MDDataMessage:
         dstr = '<2BH2L'
-        return DataMessages.MDDataMessage._make(struct.unpack(dstr, response))
+        try:
+            return DataMessages.MDDataMessage._make(struct.unpack(dstr, response))
+        except Exception as e:
+            print(e)
+            return None
     
     def unpackDataObjectHeader(self, response:bytes)->DataObjects.DataObjHeader:
         dstr = '<2HL'
-        return DataObjects.DataObjHeader._make(struct.unpack(dstr, response))
+        try:
+            return DataObjects.DataObjHeader._make(struct.unpack(dstr, response))
+        except Exception as e:
+            print(e)
+            return None
     
 
     def unpackDecodeVideoData(self, response:bytes):

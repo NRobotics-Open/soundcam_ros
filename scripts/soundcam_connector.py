@@ -40,14 +40,14 @@ class SoundCamConnector(object):
         print('Firmware Version: ', FIRMWARE_VERSION)
         self.debug = debug
         self.testing = False
-        self.invokeId = 0
+        self.invokeId = 1
         self.pubObj = SoundcamROS()
 
         #check SoundCam Connectivity and Initialize connection
         if(not self.pingCamera(deviceIP=self.pubObj.cfg['ip'])):
             exit(-1)
 
-        self.bufSize = 100 * 1024 #76816
+        self.bufSize = 10000 * 1024 #76816
         self.recvStream = False
         self.processData = True
         self.visualUp = False
@@ -423,6 +423,8 @@ class SoundCamConnector(object):
                             print('Found Header ...')
                             #print('REGEX (match): ', m, ' Group', m.group())
                             idx = m.span()[0]
+                            """ print(res[idx:idx+12])
+                            exit(-99) """
                             gotHeader = True
                             self.globalQ.put(res[idx:])
                             bufSize = self.bufSize
@@ -431,9 +433,10 @@ class SoundCamConnector(object):
                     except Exception as ex:
                         pass
                 else:
-                    #print('Incoming stream length: ', len(res))
+                    print('Incoming stream length: ', len(res))
                     #print('\nBuffer: \n', res)
                     self.globalQ.put(res)
+                    #print('global Q size: ', self.globalQ.qsize())
                     #gcnt += 1
                     #print('Added to GQueue: ', gcnt)
                     #print('---------------------------------Length of Global Deque is: %i' % len(self.globalQ))
@@ -480,42 +483,48 @@ class SoundCamConnector(object):
         keys = [DataMessages.CommandCodes.DataMessage, DataObjects.Ids.VideoData, DataObjects.Ids.AcousticVideoData, 
                 DataObjects.Ids.SpectrumData, DataObjects.Ids.AudioData]
         patterns = list()
-        patterns.append(re.compile(b'\x10\x00\x03\x00\x1e@\x00\x00', re.DOTALL)) #datamessage
-        patterns.append(re.compile(b'\r\x00\x00\x06\x0c,\x01\x00', re.DOTALL)) #video
+        #patterns.append(re.compile(b'A.*?\x00\x00,0\x00\x00.*?\x00\x00\x00', re.DOTALL)) #datamessage
+        patterns.append(re.compile(b'\r\x00\x00\x06\x0c,\x01\x00', re.DOTALL)) #video (low-res)
+        patterns.append(re.compile(b'\r\x00\x00\x06\x0c\xb0\x04\x00', re.DOTALL)) #video (hi-res)
         patterns.append(re.compile(b'\x0e\x00\x02\x00 0\x00\x00', re.DOTALL)) #acoustic
         patterns.append(re.compile(b'\x0f\x00\x03\x00& \x00\x00', re.DOTALL)) #spectrum
         patterns.append(re.compile(b'\x10\x00\x03\x00\x1e@\x00\x00', re.DOTALL)) #audio
 
-        def getIndexes(buf):
-            pass
-
+        def getIndexes(ptnLs: list, buf):
+            match = None
+            for ptn in ptnLs:
+                res = ptn.search(buf)
+                if(match is None):
+                    match = res
+                elif(res and (res.span()[0] < match.span()[0])):
+                    match = res
+            return match
+        
         dmsg:DataMessages.MDDataMessage = None
-        dmsgIdx = 0
+        dmsgIdx = None
         while(canRun):
             #read queue and filter
             if(not globalQ.empty()):
-                """ if(globalQ.qsize() > 5):
-                    print('Global Queue Size: ', globalQ.qsize()) """
+                if(globalQ.qsize() > 5):
+                    print('Global Queue Size: ', globalQ.qsize())
                 if(canPopfromQ):
-                    #print('Popping from Queue ...')
+                    print('Popping from Queue ...')
                     inObj = globalQ.get()
-                    bufLen = len(inObj)
                     if(xsData):
-                        bufLen += len(xsData)
-                        data = io.BytesIO(xsData + inObj)
+                        inObj = xsData + inObj
+                        data = io.BytesIO(inObj)
                         xsData = bytes()
-                        #print('Prepended xsData ...')
+                        print('Prepended xsData ...')
                     else:
-                        #dmsgIdx = patterns[0].search(inObj)
                         data:io.BytesIO = io.BytesIO(inObj)
                 
                     if(contRead):#if fetching subsequent bytes
-                        #print('Fetching subsequent for ObjectType: ', curId)
+                        print('Fetching subsequent for ObjectType: ', curId)
                         rd = data.read(remainingLen)
                         #print('Subsequent:  ', rd)
                         curBf += rd
                         if(len(rd) == remainingLen):
-                            #print('Appending to corresponding deque ...')
+                            print('Appending to corresponding deque ...')
                             if(curId == DataObjects.Ids.AcousticVideoData.value):
                                 if(acVidQ is not None):
                                     acVidQ.put(io.BytesIO(curBf)) #push on queue
@@ -542,48 +551,89 @@ class SoundCamConnector(object):
                             curId = 0
                             curBf = bytes()
                             contRead = False 
-                            if(remainingLen == bufLen):
-                                remainingLen = 0
-                                continue
                             remainingLen = 0
+                            if(remainingLen == len(inObj)):
+                                continue
+                            
+                            #cIdx = data.tell()
+                            inObj = data.read(-1) # read all
+                            data = io.BytesIO(inObj)
+                            #data.seek(cIdx) #restore io
                         else: #if not all bytes fetched, recalculate remaining length
                             remainingLen = remainingLen - len(rd)
-                            #print('More data required. RemainingLength: ', remainingLen)
+                            print('More data required. RemainingLength: ', remainingLen)
                             continue #go back to start
-                #for debugging
-                #print('Generic BufferLength: %i' % bufLen)
-                cIdx = data.tell()
-                bufLen2 = len(inObj[cIdx:])
-                #bufLen2 = len(data.read(-1))
-                #print('Index: %i | Cur BufferLength: %i' % (cIdx, bufLen2))
-                #print('Start of Stream: ', data.read(80))
-                #data.seek(cIdx) #restore
-                if(bufLen2 < 32): #if less than CommonStatus size
+                else:
+                    print('previous Queue processing ...')
+                    #cIdx = data.tell()
+                    inObj = data.read(-1)
+                    data = io.BytesIO(inObj)
+                    #data.seek(cIdx) #restore
+                
+                st = time.time()
+                dmsgIdx = getIndexes(patterns, inObj)
+                elapsed = time.time() - st
+                print('Time scanning: ', elapsed)
+                if(elapsed >= 0.009):
+                    exit(-99)
+
+                if(dmsgIdx):
+                    print(dmsgIdx)
+                    hdr = inObj[dmsgIdx.span()[0] - 12:dmsgIdx.span()[0]]
+                    data.seek(dmsgIdx.span()[0])
+                    #hdr = data.read(12)
+                    #print(hdr)
+                    dmsg = protocol.unpackDataMessage(hdr)
+                    if(dmsg is None):
+                        #print('Dmsg decoding returned NONE!!')
+                        continue
+                    #print(dmsg)
+                    #continue
+                else:
+                    print('Data BUT NO HEADER FOUND!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+                    print('No header in: \n', inObj)
+                    exit(-99)
+                    #time.sleep(3.0)
+                    canPopfromQ = True
+                    continue
+                
+                #debugging
+                print('Generic buffer length: ', len(inObj))
+                
+                if(len(inObj) < 32): #if less than CommonStatus size
                     xsData = inObj
-                    #print('Low Buffer Length: ', len(xsData))
+                    print('Low Buffer Length: ', len(xsData))
                     canPopfromQ = True
                     continue
 
-                hdr = data.read(12)
-                dmsg = protocol.unpackDataMessage(hdr)
-                if((dmsg.ObjectCount > 100) or (bufLen2 == 0)):
+                """ if((dmsg.ObjectCount > 100) or (bufLen2 == 0)):
                     print('Bad message detected! ', dmsg)
                     data.seek(cIdx)
                     #print(hdr)
                     #print('Skipping ...')
-                    #time.sleep(3.0)
-                    """ while(not globalQ.empty()):
-                        globalQ.get_nowait() """
+                    time.sleep(3.0)
+                    while(not globalQ.empty()):
+                        globalQ.get_nowait()
                     canPopfromQ = True
-                    continue
+                    continue """
 
+                #print('Pre-dmsg (if)', dmsg)
                 if(dmsg.Command == DataMessages.CommandCodes.DataMessage.value):
                     #print('Object count: %i | Datamessage Length: %i' % (dmsg.ObjectCount, dmsg.DataLength))
                     for i in range(dmsg.ObjectCount):
                         dt = data.read(8)
-                        #print('\nMessage header: ', dt)
                         dobj:DataObjects.DataObjHeader = protocol.unpackDataObjectHeader(dt)
-                        #print('Processing DataObject| Id: %i, Length: %i' % (dobj.Id, dobj.Length))
+                        if(dobj is None):
+                            print('object header returned None!')
+                            time.sleep(3.0)
+                            exit(-99)
+                        else:
+                            if(dobj.Id > 50):
+                                print('\Message header: ', dt)
+                                print('Processing DataObject| Id: %i, Length: %i' % (dobj.Id, dobj.Length))
+                                exit(-99)
+                                
+                        
                         if(dobj.Id == DataObjects.Ids.AcousticVideoData.value):
                             #print('Got Acoustic-Video data')
                             curBf = data.read(dobj.Length)
