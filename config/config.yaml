@@ -6,13 +6,18 @@ bulk_config: True
 use_ros: True
 
 #streaming parameters
-camera_width: 640
-camera_height: 480
-video_framerate: 30 #fps
-acousticimage_framerate: 30 #fps
-minimum_freq_range: 3000
-maximum_freq_range: 10000
-distance: 1000 #mm
+distance: 3500 #mm
+min_frequency: 4300
+max_frequency: 67700
+camera_W: 640
+camera_H: 480
+acimage_fps: 50 #fps
+acavg: 0 #0 - fast 1 - slow 2 - impulse
+device_state: 5 #0-Idle 1-Measuring 2-Streaming 3-Service_1 4-Ultrasonic 5-Ultrasonic+
+datatosend: 75 #11010010
+heartbeat_rate: 300 #Hz
+camera_lighting: 0 #0-off 1-on
+video_fps: 30 #fps
 
 publish_video: True
 publish_acoustic_video: True
@@ -28,9 +33,9 @@ visualize_audio: False
 minimum_value: -300000
 maximum_value: 300000
 
-visualize_video: False
+visualize_video: True
 
-visualize_acoustic_video: False
+visualize_acoustic_video: True
 minimum_db: 0
 maximum_db: 100
 

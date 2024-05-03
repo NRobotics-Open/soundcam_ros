@@ -8,6 +8,7 @@ from datetime import datetime
 from operator import itemgetter
 from typing import List
 import numpy as np
+import re
 
 class CommandCodes(Enum):
     ResetReq = 0x80
@@ -344,6 +345,18 @@ class CameraProtocol(object):
         self.debug = debug
         self.stateProcStatus = bitarray(DataMessages.Status.MAX_SIZE.value)
         self.stateProcStatus.setall(0)
+
+        #patterns
+        keys = [DataMessages.CommandCodes.DataMessage, DataObjects.Ids.VideoData, DataObjects.Ids.AcousticVideoData, 
+                DataObjects.Ids.SpectrumData, DataObjects.Ids.AudioData]
+        self.patterns = list()
+        #patterns.append(re.compile(b'A.*?\x00\x00,0\x00\x00.*?\x00\x00\x00', re.DOTALL)) #datamessage
+        self.patterns.append(re.compile(b'\r\x00\x00\x06\x0c,\x01\x00', re.DOTALL)) #video (low-res)
+        self.patterns.append(re.compile(b'\r\x00\x00\x06\x0c\xb0\x04\x00', re.DOTALL)) #video (hi-res)
+        self.patterns.append(re.compile(b'\x0e\x00\x02\x00 0\x00\x00', re.DOTALL)) #acoustic
+        self.patterns.append(re.compile(b'\x0f\x00\x03\x00& \x00\x00', re.DOTALL)) #spectrum
+        self.patterns.append(re.compile(b'\x10\x00\x03\x00\x1e@\x00\x00', re.DOTALL)) #audio
+
     
     def __post_init__(self):
         print('Running post init')
@@ -357,6 +370,16 @@ class CameraProtocol(object):
                     \n\t Features: {4}, \n\t Status[2]: {5} '''.format(self.DeviceProtocolVersion, self.DeviceId, self.IPAddress, 
                                                   self.MACAddress, self.Features1, self.Status2)
         return summary
+    
+    def getMatch(self, buf):
+        match = None
+        for ptn in self.patterns:
+            res = ptn.search(buf)
+            if(match is None):
+                match = res
+            elif(res and (res.span()[0] < match.span()[0])):
+                match = res
+        return match
 
     def extractData(self, input)->None:
         if(type(input) is CameraProtocol.GenericResponse):
