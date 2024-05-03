@@ -59,6 +59,7 @@ class Device(object):
         Service_1 = 3
         Ultrasonic = 4
         Ultrasonic_Plus = 5
+        Unknown = 6
     class SubStates(Enum):
         Idle = 0
         Running = 1
@@ -343,6 +344,12 @@ class CameraProtocol(object):
     def __init__(self, protocol:int=3, debug=False):
         self.pcProtocolVersion = protocol
         self.debug = debug
+
+        self.prepareStateResponse = Device.DeviceStates.Idle
+        self.DeviceState = Device.DeviceStates.Idle
+        self.SubState = Device.SubStates.Idle
+        self.isConfigured = False
+
         self.stateProcStatus = bitarray(DataMessages.Status.MAX_SIZE.value)
         self.stateProcStatus.setall(0)
 
@@ -356,6 +363,7 @@ class CameraProtocol(object):
         self.patterns.append(re.compile(b'\x0e\x00\x02\x00 0\x00\x00', re.DOTALL)) #acoustic
         self.patterns.append(re.compile(b'\x0f\x00\x03\x00& \x00\x00', re.DOTALL)) #spectrum
         self.patterns.append(re.compile(b'\x10\x00\x03\x00\x1e@\x00\x00', re.DOTALL)) #audio
+        #self.patterns.append(re.compile(b'\x10\x00\x03\x00\x1e@\x00\x00', re.DOTALL)) #prepare re
 
     
     def __post_init__(self):
@@ -399,14 +407,23 @@ class CameraProtocol(object):
                             'IPAddress', 'PCBSerialNumber', 'Features1', 'Features2', 'Features3', 'Status2', 'ConnectIP', 'DeviceState', \
                             'SubState', 'Error', 'Step0', 'Step_1', 'TemperatureCPU', 'TemperatureTop', 'TemperatureBottom', \
                             'CPULoad_1', 'CPULoad_2')(input._asdict())
+        elif(type(input) is DataObjects.SDCommonStatus):
+            _, _, _, self.Error, DeviceState, SubState = \
+                itemgetter('ObjetID', 'ObjectType' ,'Length', 'ErrorCode',\
+                            'DeviceState', 'SubState')(input._asdict())
+            self.DeviceState = Device.DeviceStates(DeviceState)
+            self.SubState = Device.SubStates(SubState)
     
     def unpackDecodeResponse(self, response:bytes)->None:
+        if(response):
+            if(len(response) < 1460):
+                print(response, ' Length:', len(response))
         if(self.pcProtocolVersion == 3):
             unpacked:List[CameraProtocol | DataObjects] = list()
             cmd = int.from_bytes(response[:1], byteorder='little')
             if(cmd == CommandCodes.IdentificationRes.value):
-                unpacked.append(CameraProtocol.IdResponse._make(struct.unpack('<2BH7LQ4L4s4s12s2L4B4L2H3f2L', response)))
-            elif(cmd == CommandCodes.ReadDataObjectRes.value):
+                unpacked.append(CameraProtocol.IdResponse._make(struct.unpack('<2BH7LQ4L4s4s12s2L4B4L2H3f2L', response[:128])))
+            elif(cmd == CommandCodes.ReadDataObjectRes.value): #Read Response
                 dstr = '<2BH3L'
                 arr_idx = struct.Struct(dstr).size
                 rdobj_unpacked = CameraProtocol.ReadDataObjectResponse._make(struct.unpack(dstr, response[:arr_idx]))
@@ -513,7 +530,8 @@ class CameraProtocol(object):
                             arr_idx += result
 
                     if(self.debug):
-                        print('Next Idx: ', arr_idx)
+                        print('Next Idx(Len): ', arr_idx)
+                        return None
 
 
             elif((cmd == CommandCodes.ResetRes.value) or 
@@ -525,7 +543,7 @@ class CameraProtocol(object):
                 unpacked.append(CameraProtocol.GenericResponse._make(struct.unpack('<2BH2L', response)))
 
             if(self.debug and (unpacked is not None)):
-                print('Decoding protocol version %i message' % self.pcProtocolVersion)
+                #print('Decoding protocol version %i message' % self.pcProtocolVersion)
                 print('Unpacked: ', unpacked)
         self.decode(unpackedLs=unpacked)
     
@@ -574,14 +592,14 @@ class CameraProtocol(object):
                             self.stateProcStatus[DataMessages.Status.StopProcRes.value] = 1
                             self.stateProcStatus[DataMessages.Status.StartProcRes.value] = 0
                         elif(data.Command == CommandCodes.PrepareStateRes.value):
+                            print('PrepareState response!')
+                            self.isConfigured = True
                             self.stateProcStatus[DataMessages.Status.PrepareStateRes.value] = 1
                             self.stateProcStatus[DataMessages.Status.FinishStateRes.value] = 0
                         elif(data.Command == CommandCodes.FinishStateRes.value):
                             print('State finished!')
                             self.stateProcStatus[DataMessages.Status.FinishStateRes.value] = 1
                             self.stateProcStatus[DataMessages.Status.PrepareStateRes.value] = 0
-                        elif(data.Command == CommandCodes.WriteDataObjectRes.value):
-                            self.writeResult = True
                         
                         if(self.debug):
                             print('Command successful\n')
@@ -592,10 +610,9 @@ class CameraProtocol(object):
                             self.stateProcStatus[DataMessages.Status.StopProcRes.value] = 0
                         elif(data.Command == CommandCodes.PrepareStateRes.value):
                             self.stateProcStatus[DataMessages.Status.PrepareStateRes.value] = 0
+                            self.isConfigured = False
                         elif(data.Command == CommandCodes.FinishStateRes.value):
                             self.stateProcStatus[DataMessages.Status.FinishStateRes.value] = 0
-                        elif(data.Command == CommandCodes.WriteDataObjectRes.value):
-                            self.writeResult = False
                         if(self.debug):
                             print('Command failed!\n')
                         self.processError(unpacked)
@@ -719,7 +736,8 @@ class CameraProtocol(object):
         data = DataObjects.MDThermalVideoData._make(struct.unpack(dstr, response))
         print(data)
         return dssize
-    
+
+    ''' Methods to write data to the device '''
     def writeDistance(self, invokeId, distance:int)->bytes:
         pkg = DataObjects.DataObjPk._make((DataObjects.Ids.Distance, '<2HL'))
         dataLength = 4 + struct.Struct(pkg.Struct).size
@@ -759,6 +777,40 @@ class CameraProtocol(object):
         query += struct.pack(pkg.Struct, *(DataObjects.Ids.AcousticFrameRate.value, 
                                                     DataObjects.TypeIds.UInt32.value, rate))
         return query
+    
+    def writeCameraLighting(self, invokeId: int, val:int)->bytes:
+        pkg = DataObjects.DataObjPk._make((DataObjects.Ids.CameraLighting, '<2HL'))
+        dataLength = 4 + struct.Struct(pkg.Struct).size
+        query = struct.pack('<BBHLL', CommandCodes.WriteDataObjectReq.value, invokeId, 0, dataLength, 1)
+        query += struct.pack(pkg.Struct, *(DataObjects.Ids.CameraLighting.value, 
+                                                    DataObjects.TypeIds.UInt32.value, val))
+        return query
+    
+    ''' Methods to read data from the device '''
+    '''
+    RequestHeader ( ): Command (UInt8) | InvokeId (UInt8) | Reserved (UInt16) | DataLength (UInt32) | PCProtocolVersion (UInt32)
+    RequestHeader (DataObjects /w Response): Command (UInt8) | InvokeId (UInt8) | Reserved (UInt16) | DataLength (UInt32) | DataObjectCount (UInt32) \
+                    DataObject1 (ID+Type(+Length)+data of data object 1) ... DataObjectN (ID+Type(+Length)+data of data object N)
+    RequestHeader (DataObjects w/o Response): Command (UInt8) | InvokeId (UInt8) | Reserved (UInt16) | DataLength (UInt32) | DataObjectCount (UInt32) \
+                    DataObject1 (ID+Type(+Length)+data of data object 1) ... DataObjectN (ID+Type(+Length)+data of data object N)
+    '''
+    def generateReadRequest(self, command:CommandCodes, invokeId, dataLs:object=None):
+        query = None
+        if(command == CommandCodes.IdentificationReq):
+            dataLength = 4
+            query = struct.pack('<2BH2L', command.value, invokeId, 0, dataLength, self.pcProtocolVersion)
+        elif(command == CommandCodes.ResetReq):
+            '''Approx. 100ms delay before Device resets'''
+            dataLength = 0
+            query = struct.pack('<2BH2L', command.value, invokeId, 0, dataLength, self.pcProtocolVersion)
+        elif(command == CommandCodes.ReadDataObjectReq):
+            dataLength = 4 + (len(dataLs) * 2)
+            query = struct.pack('<2BH2L', command.value, invokeId, 0, dataLength, len(dataLs))
+            for dto in dataLs:
+                query += struct.pack('<H', dto.value)
+        else:
+            print('Uknown Request!')
+        return query
 
     '''
     This method sends the required configuration parameters to the SoundCam to begin 
@@ -767,16 +819,16 @@ class CameraProtocol(object):
         Distance - sDis
         Frequency range - sFre
         Camera resolution - sVRe
-        Framerate Video - sVFr
         Framerate acoustics - sAFr
+        Acoustic Averaging - sAAvg
     '''
-    def streamParamConfig(self, invokeId, distance:int, freqRange:tuple, resolution:tuple, 
-                         videoRate:int, acousticsRate:int)->bytes:
+    def InitialConfig(self, invokeId, distance:int, freqRange:tuple, resolution:tuple, 
+                        acousticsRate:int, acousticAvg:int)->bytes:
         dataLs=[DataObjects.DataObjPk._make((DataObjects.Ids.Distance, '<2HL')), 
                 DataObjects.DataObjPk._make((DataObjects.Ids.FrequencyRange, '<2H2L')),
                 DataObjects.DataObjPk._make((DataObjects.Ids.CameraResolution, '<4H')),
-                DataObjects.DataObjPk._make((DataObjects.Ids.VideoFrameRate, '<2HL')),
-                DataObjects.DataObjPk._make((DataObjects.Ids.AcousticFrameRate, '<2HL'))]
+                DataObjects.DataObjPk._make((DataObjects.Ids.AcousticFrameRate, '<2HL')),
+                DataObjects.DataObjPk._make((DataObjects.Ids.AcousticAveraging, '<2HL'))]
         dataLength = 4
         dataQuery = bytes()
         for dt in dataLs:
@@ -793,28 +845,28 @@ class CameraProtocol(object):
                 dataQuery += struct.pack(dt.Struct, *(DataObjects.Ids.CameraResolution.value, 
                                                     DataObjects.TypeIds.Resolution.value, *(resolution)))
                 dataLength += dssize
-            elif(dt.Id == DataObjects.Ids.VideoFrameRate):
-                dataQuery += struct.pack(dt.Struct, *(DataObjects.Ids.VideoFrameRate.value, 
-                                                    DataObjects.TypeIds.UInt32.value, videoRate))
-                dataLength += dssize
             elif(dt.Id == DataObjects.Ids.AcousticFrameRate):
                 dataQuery += struct.pack(dt.Struct, *(DataObjects.Ids.AcousticFrameRate.value, 
                                                     DataObjects.TypeIds.UInt32.value, acousticsRate))
                 dataLength += dssize
+            elif(dt.Id == DataObjects.Ids.AcousticAveraging):
+                dataQuery += struct.pack(dt.Struct, *(DataObjects.Ids.AcousticAveraging.value, 
+                                                    DataObjects.TypeIds.UInt32.value, acousticAvg))
+                dataLength += dssize
         
-        query = struct.pack('<BBHLL', DataMessages.CommandCodes.DataMessage.value, invokeId, 0, dataLength, len(dataLs))
+        query = struct.pack('<BBHLL', CommandCodes.WriteDataObjectReq.value, invokeId, 0, dataLength, len(dataLs))
         query += dataQuery
-        print('sending: ', query)
         return query
     
-    def streamConfig(self, invokeId)->bytes:
+    def dataToSendConfig(self, invokeId, dataToSend:int = 0)->bytes:
         pkg = DataObjects.DataObjPk._make((DataObjects.Ids.DataToSend, '<2H8B'))
         dataLength = 4 + struct.Struct(pkg.Struct).size
-        query = struct.pack('<BBHLL', DataMessages.CommandCodes.DataMessage.value, invokeId, 0, dataLength, 1)
-        '''AcVid|Vid|Thermal|Audio|MicLvl|MicRaw|Spectra|SingleMicData'''
-        dataSeq = bitarray('11010010', endian='little')
+        query = struct.pack('<BBHLL', CommandCodes.WriteDataObjectReq.value, invokeId, 0, dataLength, 1)
+        if(dataToSend == 0):
+            '''AcVid|Vid|Thermal|Audio|MicLvl|MicRaw|Spectra|SingleMicData'''
+            dataToSend = ba2int(bitarray('11010010', endian='little'))
         query += struct.pack(pkg.Struct, *(DataObjects.Ids.DataToSend.value, 
-                                            3, ba2int(dataSeq), 0, 0, 0, 0, 0, 0, 0))
+                                            3, dataToSend, 0, 0, 0, 0, 0, 0, 0))
         return query
     
     '''
@@ -824,8 +876,9 @@ class CameraProtocol(object):
         *Stops the measurement and transmission of all data from device to host.
         The device returns to the DeviceIdle state. A running procedure is aborted.
     '''
-    def setState(self, invokeId:int, state:Device.DeviceStates)->bytes:
-        if(state != Device.DeviceStates.Idle):
+    def setState(self, invokeId:int, 
+                 state:Device.DeviceStates= Device.DeviceStates.Unknown)->bytes:
+        if(state != Device.DeviceStates.Unknown):
             #print(state, '   ', int(state.value))
             return struct.pack('<BBHLL', CommandCodes.PrepareStateReq.value, invokeId, 0, 4, state.value)
         else: #send FinishState

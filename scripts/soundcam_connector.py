@@ -48,9 +48,9 @@ class SoundCamConnector(object):
 
         #check SoundCam Connectivity and Initialize connection
         if(not self.pingCamera(deviceIP=self.pubObj.cfg['ip'])):
-            exit(-1)
+            exit(-99)
 
-        self.bufSize = 1460 #76816
+        self.bufSize = 1460
         self.recvStream = False
         self.processData = True
         self.visualUp = False
@@ -98,20 +98,6 @@ class SoundCamConnector(object):
         
         if(self.pubObj.cfg['publish_video_acoustic_overlay']):
             self.processes.append(Process(target=self.postProc))
-        
-        """ self.thread_group = []
-        if(self.p_pubAcousticVideo):
-            self.thread_group.append(Thread(target=self.publishAcousticVideo, daemon=True))
-        if(self.p_pubSpectrum):
-            self.thread_group.append(Thread(target=self.publishSpectrum, daemon=True))
-        if(self.p_pubAudio):
-            self.thread_group.append(Thread(target=self.publishAudio, daemon=True))
-        if(self.p_pubRaw):
-            self.thread_group.append(Thread(target=self.publishRaw, daemon=True))
-        if(self.p_pubThermal):
-            self.thread_group.append(Thread(target=self.publishThermalVideo, daemon=True))
-        for th in self.thread_group:
-            th.start() """
 
         #camera protocol instance
         self.protocol = CameraProtocol(protocol=self.pubObj.cfg['protocol'], debug=self.debug) #holds & processes received data from device
@@ -130,16 +116,6 @@ class SoundCamConnector(object):
         th = Thread(target=self.receiveCyclic, daemon=True)
         th.start()
 
-        """ if(self.connect(self.pubObj.cfg['ip'], self.pubObj.cfg['port'])):
-            print('Connection established!')
-            print('Querying Camera Identification ...')
-            #send IDRequest to initialize Handshake
-            self.queryRequest(command=CommandCodes.IdentificationReq)
-            if(self.configure()):
-                print('Camera configured successfully!')
-                print('Device Ready!')
-            else:
-                print('Camera configuration failed!') """
         #Note: All data is sent as Little Endian!
     
     '''Ping Camera'''
@@ -159,9 +135,11 @@ class SoundCamConnector(object):
         return result
 
     '''
-        Establishes connection with the camera and performs handshake
+        Establishes connection with the camera and performs handshake (gets device Id)
     '''
-    def connect(self, ip_addr:str, port:int):
+    def connect(self):
+        ip_addr = self.pubObj.cfg['ip'] 
+        port = self.pubObj.cfg['port']
         self.sock = socket.socket(socket.AF_INET, # IPv4
                         socket.SOCK_STREAM) # UDP SOCK_DGRAM   #TCP SOCK_STREAM
         if hasattr(socket, "SO_REUSEPORT"):
@@ -175,97 +153,40 @@ class SoundCamConnector(object):
             self.isConnected = False
             exit(-1)
         print("\n Socket initialized on: \t IP| %s PORT| %d" % (ip_addr, port))
+        #Request device Identification
+        query = self.protocol.generateReadRequest(command=CommandCodes.IdentificationReq, 
+                                                  invokeId=self.invokeId)
+        self.invokeId += 1
+        query += self.protocol.writeCameraLighting(self.invokeId, 
+                                                   self.pubObj.cfg['cameraLighting'])
+        self.sendData(query=query)
         return self.isConnected
-    
-    '''AsyncIO setup'''
-    async def asyncStartUp(self):
-        # Get a reference to the event loop as we plan to use
-        # low-level APIs.
-        loop = asyncio.get_running_loop()
-
-        on_con_lost = loop.create_future()
-        asyncio.create_task(self.work())
-
-        idQuery = self.queryRequest(command=CommandCodes.IdentificationReq, getQuery=True)
-        self.transport, self.soundcamclient = await loop.create_connection(
-            lambda: SoundcamClientProtocol(on_con_lost, query=idQuery, q=self.globalQ),
-                                        self.pubObj.cfg['ip'], self.pubObj.cfg['port'])
-        
-        configQuery = self.configure(getQuery=True)
-        self.transport.write(configQuery)
-        await asyncio.sleep(1.0)
-
-        await self._stopMeasurement_async()
-        await asyncio.sleep(1.0)
-        if(await self._startMeasurement_async()):
-            print('Receiving stream ...')
-        
-        # Wait until the protocol signals that the connection
-        # is lost and close the transport.
-        try:
-            await on_con_lost
-        finally:
-            self.transport.close()
-
-    
-    '''Optional place to run other stuff while asynio.run() is executing'''
-    async def work(self):
-        isConfigured = False
-        isCameraReady = False
-
-        while(True):
-            print('Running ...')
-            await asyncio.sleep(1.0)
-
-    async def _startMeasurement_async(self)->bool:
-        try:
-            query = self.protocol.setState(self.invokeId, Device.DeviceStates.Streaming)#set streaming state
-            self.sendData(query=query, useTransport=True)
-            query = self.protocol.streamConfig(self.invokeId)
-            self.sendData(query=query, useTransport=True)
-            query = self.protocol.startStopProcedure(self.invokeId) #start procedure
-            self.sendData(query=query, useTransport=True)
-        except Exception as ex:
-            print('Error Starting Measurement!')
-            return False
-        self.protocol.setStreamFlags()
-        return True
-    
-    async def _stopMeasurement_async(self)->bool:
-        try:
-            query = self.protocol.startStopProcedure(self.invokeId, False) #stop procedure
-            self.sendData(query=query, hasResponse=False, useTransport=True)
-            query = self.protocol.setState(self.invokeId, Device.DeviceStates.Idle) #set Idle state
-            self.sendData(query=query, hasResponse=False, useTransport=True)
-            self.protocol.unsetStreamFlags()
-        except Exception as ex:
-            print('Error Stopping Measurement')
-            return False
-        return True
 
     '''Sends command to reset the camera'''
     def restartCamera(self):
-        self.queryRequest(command=CommandCodes.ResetReq) 
+        query = self.protocol.generateReadRequest(command=CommandCodes.ResetReq, 
+                                                  invokeId=self.invokeId)
+        self.sendData(query=query)
         
     '''Starts the cyclic reception of stream'''
     def startStream(self):
-        if((not self.testing)):
-            if(self.isCameraReady()):
-                print('Stream started/resumed ...')
-                self.recvStream = True
-                self._startMeasurement()
+        print('Stream started/resumed ...')
+        self.recvStream = True
+        self._startMeasurement()
 
     
     '''Stops the cyclic reception of stream'''
     def stopStream(self):
+        query = self.protocol.setState(invokeId=self.invokeId)
+        self.sendData(query=query)
+        print('Sent FinishRequest ...')
         self.recvStream = False
-        self._stopMeasurement()
-        print('Stream suspended/stopped ...')
 
     def disconnect(self):
         if(self.isConnected):
             try:
                 plt.close()
+                #self.stopStream()
                 self._stopMeasurement()
                 self.sock.close()
             except Exception as ex:
@@ -275,89 +196,54 @@ class SoundCamConnector(object):
             proc.join()
 
     '''Send data over Network'''
-    def sendData(self, query:bytes, hasResponse:bool = True, useTransport = False):
+    def sendData(self, query:bytes):
         #check and send
-        if(query is not None):
-            if(not useTransport):
+        try:
+            if(query is not None):
                 written = self.sock.send(query)
                 if(self.debug):
-                    print("Written: %i bytes" % written)
-                if(hasResponse):
-                    res = self.sock.recv(self.bufSize)
-                    if(self.debug):
-                        print("\nTimestamp: ", time.time(), "| Length: ", len(res), " | ", res[:12])
-                    if(len(res) > 0):
-                        try:
-                            self.protocol.unpackDecodeResponse(response=res)
-                        except:
-                            pass
+                    print("Written: %s \Length: %i" % (query, written))
+                self.invokeId += 1
+                if(self.invokeId > 0xFF):
+                    self.invokeId = 0
+                time.sleep(0.001)
             else:
-                self.transport.write(query)
-        else:
-            print("Warning: Command NotFound!")
-        
-        self.invokeId += 1
-        if(self.invokeId > 0xFF):
-            self.invokeId = 0
+                print("Warning: Empty Query!")
+        except Exception as e:
+            print('Sending error: ', e) 
     
     '''
-    RequestHeader ( ): Command (UInt8) | InvokeId (UInt8) | Reserved (UInt16) | DataLength (UInt32) | PCProtocolVersion (UInt32)
-    RequestHeader (DataObjects /w Response): Command (UInt8) | InvokeId (UInt8) | Reserved (UInt16) | DataLength (UInt32) | DataObjectCount (UInt32) \
-                    DataObject1 (ID+Type(+Length)+data of data object 1) ... DataObjectN (ID+Type(+Length)+data of data object N)
-    RequestHeader (DataObjects w/o Response): Command (UInt8) | InvokeId (UInt8) | Reserved (UInt16) | DataLength (UInt32) | DataObjectCount (UInt32) \
-                    DataObject1 (ID+Type(+Length)+data of data object 1) ... DataObjectN (ID+Type(+Length)+data of data object N)
+        Configures the camera:
+            - Sets: 
+                distance 
+                min & max frequency
+                camera resolutions (Width x Height)
+                acoustic Image FPS
+                acoustic Averaging
+            - Sets the device state
+            - Sets the data to be sent from the device
     '''
-    def queryRequest(self, command:CommandCodes, dataLs:object=None, getQuery=False):
-        query = None
-        if(command == CommandCodes.IdentificationReq):
-            dataLength = 4
-            query = struct.pack('<BBHLL', command.value, self.invokeId, 0, dataLength, self.pubObj.cfg['protocol'])
-        elif(command == CommandCodes.ResetReq):
-            '''Approx. 100ms delay before Device resets'''
-            dataLength = 0
-            query = struct.pack('<BBHLL', command.value, self.invokeId, 0, dataLength, self.pubObj.cfg['protocol'])
-        elif(command == CommandCodes.ReadDataObjectReq):
-            dataLength = 4 + (len(dataLs) * 2)
-            query = struct.pack('<BBHLL', command.value, self.invokeId, 0, dataLength, len(dataLs))
-            for dto in dataLs:
-                query += struct.pack('<H', dto.value)
-            print('sending: ', query)
-        else:
-            print('Uknown Request!')
-        if(query is not None):
-            #print('Sending: ', query)
+    def configure(self, getQuery=False)->bool:
+        try:
+            #Configure with WriteObjectReq request --- multiple
+            query = self.protocol.InitialConfig(self.invokeId, 
+                            self.pubObj.cfg['distance'], 
+                            (self.pubObj.cfg['minFrequency'], self.pubObj.cfg['maxFrequency']), 
+                            (self.pubObj.cfg['camera_W'], self.pubObj.cfg['camera_H']),
+                            self.pubObj.cfg['acimageFPS'], 
+                            self.pubObj.cfg['acAvg'])
+            #concatenate PrepareState
+            self.invokeId += 1
+            query += self.protocol.setState(self.invokeId, 
+                                            Device.DeviceStates(self.pubObj.cfg['deviceState']))#set device state
+            #concatenate DataToSend
+            self.invokeId += 1
+            query += self.protocol.dataToSendConfig(self.invokeId, 
+                                                    self.pubObj.cfg['dataToSend'])
             if(getQuery):
                 return query
             self.sendData(query=query)
-    
-    def configure(self, getQuery=False)->bool:
-        try:
-            if(self.pubObj.cfg['bulk_config']): #Configure with DataMessage request --- multiple
-                query = self.protocol.streamParamConfig(self.invokeId, 
-                                self.pubObj.cfg['distance'], 
-                                (self.pubObj.cfg['min_frequency'], self.pubObj.cfg['max_frequency']), 
-                                (self.pubObj.cfg['camera_W'], self.pubObj.cfg['camera_H']), 
-                                self.pubObj.cfg['video_fps'], 
-                                self.pubObj.cfg['acimage_fps'])
-                if(getQuery):
-                    return query
-                self.sendData(query=query, hasResponse=False)
-            else: #Initialize with WriteObjectReq --- one by one
-                q = self.protocol.writeDistance(self.invokeId, self.pubObj.cfg['distance'])
-                self.sendData(query=q)
-                q = self.protocol.writeFrequencyRange(self.invokeId, 
-                            (self.pubObj.cfg['min_frequency'], self.pubObj.cfg['max_frequency']))
-                self.sendData(query=q)
-                q = self.protocol.writeCamResolution(self.invokeId, 
-                            (self.pubObj.cfg['resolution_width'], self.pubObj.cfg['resolution_height']))
-                self.sendData(query=q)
-                q = self.protocol.writeVidFrameRate(self.invokeId, self.pubObj.cfg['video_fps'])
-                self.sendData(query=q)
-                q = self.protocol.writeAcFrameRate(self.invokeId, self.pubObj.cfg['acimage_fps'])
-                self.sendData(query=q)
-            
-            #query = self.protocol.streamConfig(self.invokeId)
-            #self.sendData(query=query, hasResponse=False)
+            #self._startMeasurement()
         except Exception as ex:
             print('Error Configuring device!', ex)
             return False
@@ -365,12 +251,14 @@ class SoundCamConnector(object):
     
     def _startMeasurement(self)->bool:
         try:
-            query = self.protocol.setState(self.invokeId, Device.DeviceStates.Streaming)#set streaming state
+            """ query = self.protocol.setState(self.invokeId, Device.DeviceStates.Streaming)#set streaming state
             self.sendData(query=query)
-            query = self.protocol.streamConfig(self.invokeId)
-            self.sendData(query=query)
+            query = self.protocol.dataToSendConfig(self.invokeId)
+            self.sendData(query=query) """
+            print('Starting measurement ...')
             query = self.protocol.startStopProcedure(self.invokeId) #start procedure
             self.sendData(query=query)
+            self.recvStream = True
         except Exception as ex:
             print('Error Starting Measurement!')
             return False
@@ -379,152 +267,73 @@ class SoundCamConnector(object):
     
     def _stopMeasurement(self)->bool:
         try:
+            print('Stopping measurement ...')
             query = self.protocol.startStopProcedure(self.invokeId, False) #stop procedure
-            self.sendData(query=query, hasResponse=False)
-            query = self.protocol.setState(self.invokeId, Device.DeviceStates.Idle) #set Idle state
-            self.sendData(query=query, hasResponse=False)
+            self.invokeId += 1
+            query += self.protocol.setState(self.invokeId, Device.DeviceStates.Idle) #set Idle state
+            self.sendData(query=query)
             self.protocol.unsetStreamFlags()
         except Exception as ex:
             print('Error Stopping Measurement')
             return False
         return True
     
-    '''Ready's the camera for streaming '''
-    def isCameraReady(self):
-        isEmpty = False
-        isColdRun = True
-        data_cnt = 0
-        cnt = 0
-        
-        print('Checking for camera readiness ...')
-        self._startMeasurement()
-        start_t = time.time()
-        while((time.time() - start_t) < CONNECT_TIMEOUT):
-            res = self.sock.recv(self.bufSize)
-            if(self.debug):
-                print("Timestamp: ", time.time(), "| Length: ", len(res), " | ", res[:36])
-            time.sleep(0.1)
-            if(isColdRun):
-                if((res == b'') and not isEmpty):
-                    isEmpty = True
-                    continue
-                
-                if(isEmpty and (res == b'')):
-                    cnt += 1
-                    if(cnt >= 100):
-                        ready = True
-                        break
-                    continue
-
-                if(res): #has data
-                    data_cnt += 1
-                    if(data_cnt >= 3):
-                        isColdRun = False
-            else: #check for header
-                m = self.protocol.getMatch(res)
-                if(m):
-                    print('Found Header onstartup!')
-                    break
-        
-        if(not isColdRun):
-            return not isColdRun
-        
-        self._stopMeasurement()
-        self.sock.close()
-        if(self.connect(self.pubObj.cfg['ip'], self.pubObj.cfg['port'])):
-            return self.configure()
-        
-    '''Checks if the camera is ready to publish stream'''
-    def startUpTest(self):
-        print('\n Testing -------------------------------------------------------')
-        #self.restartCamera()
-        #self.queryRequest(command=CommandCodes.ReadDataObjectReq, dataLs=[DataObjects.Ids.VideoData])
-        self.testing = True
-        #self.queryRequest(command=CommandCodes.ReadDataObjectReq, dataLs=[DataObjects.Ids.VideoFrameRate])
-        print('IsCameraReady: ', self.isCameraReady())
-        self.receiveCyclicTest()
-        print('Device Ready!')
-
-    '''Packs the continuous incoming stream to the generic Queue'''
-    def receiveCyclicTest(self):
-        cnt = 0
-        print('If ...')
-        if(self._startMeasurement()):
-            print('Starting stream ...')
-            bufSize = 4096
-            gotHeader = False
-            while(self.protocol.isStreaming()):
-                res = self.sock.recv(bufSize)
-                if(not gotHeader):
-                    try:
-                        m = re.search(rb'A.*?\x00\x00,0\x00\x00.*?\x00\x00\x00', res, re.S)
-                        if(m):
-                            print('Found Header ...')
-                            #print('REGEX (match): ', m, ' Group', m.group())
-                            idx = m.span()[0]
-                            gotHeader = True
-                            self.globalQ.put(res[idx:])
-                            bufSize = self.bufSize
-                        else:
-                            print('Searching for correct Header ...')
-                    except Exception as ex:
-                        pass
-                else:
-                    """ if(self.debug):
-                    print('\nReceiving stream ...') """
-                    print('\n', res)
-                    #print("Timestamp (cyclic): ", time.time(), "| Length: ", len(res), " | ", res[:36])
-                    #time.sleep(0.01)
-
-                    cnt += 1
-                    if(cnt >= 50):
-                        break
-            print('Stopping stream ...')
-            self._stopMeasurement()
-        print('EndIf ...')
-    
     '''Packs the continuous incoming stream to the generic Queue'''
     def receiveCyclic(self):
-        """ req_b = self.protocol.writeVidFrameRate(self.invokeId, 30)
-        self.invokeId += 1
-        self.sock.send(req_b) """
         print('Cyclic thread started ...')
-        gotHeader = False
-        bufSize = 1024
-        #gcnt = 0
         start_t = time.time()
+        heartrate = 1/ self.pubObj.cfg['heartbeatRate']
+        heart_t = time.time()
+        commonstatus_t = time.time()
+        canPrintLen = True
         while(self.processData):
-            if(self.recvStream and self.protocol.isStreaming()):
+            if(self.isConnected):
+                #print('Receiving ...')
                 res = self.sock.recv(self.bufSize)
-                if(not gotHeader):
-                    try:
-                        #m = re.search(rb'A.*?\x00\x00,0\x00\x00.*?\x00\x00\x00', res, re.S)
-                        m = self.protocol.getMatch(res)
-                        if(m):
-                            print('Found Header ...')
-                            gotHeader = True
-                            self.globalQ.put(res)
-                        else:
-                            print('Searching for correct Header ...')
-                    except Exception as ex:
-                        pass
-                else:
-                    #print('Incoming stream length: ', len(res))
-                    #print('\nBuffer: \n', res)
-                    if(res ):
-                        """ if(self.globalQ.qsize() > 500): #forcibly empty q
-                            print('emptying queue......')
-                            while(not self.globalQ.empty()):
-                                self.globalQ.get_nowait() """
-                        self.globalQ.put(res)
-                    #print('global Q size: ', self.globalQ.qsize())
-                    #gcnt += 1
-                    #print('Added to GQueue: ', gcnt)
-                    #print('---------------------------------Length of Global Deque is: %i' % len(self.globalQ))
-            else:
-                if((time.time() - start_t) >= 3 and self.isConnected):
+                if(res):
+                    if(self.recvStream):
+                        sz = len(res)
+                        if(canPrintLen and (sz == 1460)):
+                            print(res[:36])
+                            canPrintLen = False
+                        if((sz < 1460) and not canPrintLen):
+                            canPrintLen = True
+                        #print('Incoming with length: ', len(res))
+                        #self.globalQ.put(res)
+                    else: #if not streaming
+                        try:
+                            """ if((self.protocol.DeviceState == 
+                                Device.DeviceStates(self.pubObj.cfg['deviceState'])) and 
+                                (self.protocol.SubState == Device.SubStates.Preparing)):
+                                #self.recvStream = True #ready for continuous stream
+                                #print('Starting measurement')
+                                #self._startMeasurement()
+                                print('Preparing detected!')
+                                time.sleep(10.0) """
+                            self.protocol.unpackDecodeResponse(response=res)
+                        except Exception as ex:
+                            print('\nError Unpacking and Decoding ...')
+                            print(ex)
+                            print('Length: ', len(res), ' ', res)
+
+                now = time.time()
+                if((not self.recvStream) and self.protocol.isConfigured): #query for common status when not receiving stream
+                    if((now - commonstatus_t) >= 0.5):
+                        query = self.protocol.generateReadRequest(command=CommandCodes.ReadDataObjectReq, invokeId=self.invokeId, dataLs=[DataObjects.Ids.CommonStatus])
+                        self.sendData(query)
+                        commonstatus_t = now
+                
+                if((now - start_t) >= 3 and self.isConnected):
                     print('Cyclic idling ...')
                     start_t = time.time()
+
+                """ if((now - heart_t) >= heartrate):
+                    #send ACK to device
+                    heart_t = now """
+                time.sleep(0.0001)
+            else:
+                print('Socket not connected!')
+                time.sleep(0.1)
         
     '''Filters the generic Deque to the corresponding Deques based on the type'''
     def streamFilter(self, qDict:dict, canRun:bool, protocol:CameraProtocol):
@@ -572,8 +381,9 @@ class SoundCamConnector(object):
                     print('Global Queue Size: ', globalQ.qsize())
                 
                 if(canPopfromQ):
-                    #print('Popping from Queue ...')
+                    print('Popping from Queue ...')
                     inObj = globalQ.get()
+                    
                     if(xsData):
                         inObj = xsData + inObj
                         data = io.BytesIO(inObj)
@@ -633,6 +443,13 @@ class SoundCamConnector(object):
                     inObj = data.read(-1)
                     data = io.BytesIO(inObj)
                     #data.seek(cIdx) #restore
+
+                #check if writereqres
+                """ if((inObj[:1] == CommandCodes.WriteDataObjectRes.value) or 
+                   (inObj[:1] == CommandCodes.PrepareStateRes)):
+                    print('Detected write resp:', inObj, ' truncating ...' )
+                    inObj = b''
+                    time.sleep(5.0) """
                 
                 if(inObj):
                     dmsgIdx = protocol.getMatch(inObj)
@@ -670,17 +487,6 @@ class SoundCamConnector(object):
                     canPopfromQ = True
                     continue
 
-                """ if((dmsg.ObjectCount > 100) or (bufLen2 == 0)):
-                    print('Bad message detected! ', dmsg)
-                    data.seek(cIdx)
-                    #print(hdr)
-                    #print('Skipping ...')
-                    time.sleep(3.0)
-                    while(not globalQ.empty()):
-                        globalQ.get_nowait()
-                    canPopfromQ = True
-                    continue """
-
                 #print('Pre-dmsg (if)', dmsg)
                 if(dmsg.Command == DataMessages.CommandCodes.DataMessage.value):
                     #print('Object count: %i | Datamessage Length: %i' % (dmsg.ObjectCount, dmsg.DataLength))
@@ -699,7 +505,7 @@ class SoundCamConnector(object):
                                 
                         
                         if(dobj.Id == DataObjects.Ids.AcousticVideoData.value):
-                            #print('Got Acoustic-Video data')
+                            print('Got Acoustic-Video data')
                             curBf = data.read(dobj.Length)
                             if(len(curBf) == dobj.Length):
                                 if(acVidQ is not None):
@@ -713,7 +519,7 @@ class SoundCamConnector(object):
                                 break
 
                         elif(dobj.Id == DataObjects.Ids.VideoData.value):
-                            #print('Got Video data')
+                            print('Got Video data')
                             curBf = data.read(dobj.Length)
                             if(len(curBf) == dobj.Length):
                                 if(vidQ is not None):
@@ -727,7 +533,7 @@ class SoundCamConnector(object):
                                 break
                         
                         elif(dobj.Id == DataObjects.Ids.SpectrumData.value):
-                            #print('Got Spectrum data')
+                            print('Got Spectrum data')
                             curBf = data.read(dobj.Length)
                             if(len(curBf) == dobj.Length):
                                 if(specQ is not None):
@@ -741,7 +547,7 @@ class SoundCamConnector(object):
                                 break
 
                         elif(dobj.Id == DataObjects.Ids.AudioData.value):
-                            #print('Got Audio data')
+                            print('Got Audio data')
                             curBf = data.read(dobj.Length)
                             if(len(curBf) == dobj.Length):
                                 if(audQ is not None):
@@ -783,7 +589,7 @@ class SoundCamConnector(object):
                                 break
                         
                         elif(dobj.Id == DataObjects.Ids.CommonStatus.value):
-                            #print('Got CommonStatus data')
+                            print('Got CommonStatus data')
                             curBf = data.read(dobj.Length)
                             if(len(curBf) == dobj.Length):
                                 pass #TODO: update camera status
@@ -1073,12 +879,15 @@ if __name__ == '__main__':
     camObj = SoundCamConnector(debug=True)
     atexit.register(camObj.disconnect)
 
-    #camObj.startUpTest()
-    #camObj.restartCamera()
-    """ camObj.startStream()
+    if(camObj.connect()):
+        print('Sending Initial configuration and preparing state')
+        camObj.configure()
 
+    #camObj.restartCamera()
+    time.sleep(8.0)
+    camObj._startMeasurement()
     while(camObj.processData):
         time.sleep(0.001)
-        #print('Stream running ...') """
+        #print('Stream running ...')
     
-    asyncio.run(camObj.asyncStartUp())
+    #asyncio.run(camObj.asyncStartUp())
