@@ -761,7 +761,7 @@ class CameraProtocol(object):
                                         DataObjects.TypeIds.Resolution.value, *(resolution)))
         return query
     
-    def writeVidFrameRate(self, invokeId, rate:int)->bytes:
+    def writeVidFPS(self, invokeId, rate:int)->bytes:
         pkg = DataObjects.DataObjPk._make((DataObjects.Ids.VideoFrameRate, '<2HL'))
         dataLength = 4 + struct.Struct(pkg.Struct).size
         query = struct.pack('<BBHLL', CommandCodes.WriteDataObjectReq.value, invokeId, 0, dataLength, 1)
@@ -769,7 +769,7 @@ class CameraProtocol(object):
                                                     DataObjects.TypeIds.UInt32.value, rate))
         return query
     
-    def writeAcFrameRate(self, invokeId, rate:int)->bytes:
+    def writeAcFPS(self, invokeId, rate:int)->bytes:
         pkg = DataObjects.DataObjPk._make((DataObjects.Ids.AcousticFrameRate, '<2HL'))
         dataLength = 4 + struct.Struct(pkg.Struct).size
         query = struct.pack('<BBHLL', DataMessages.CommandCodes.DataMessage.value, invokeId, 0, dataLength, 1)

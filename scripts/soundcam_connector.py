@@ -256,6 +256,7 @@ class SoundCamConnector(object):
             query = self.protocol.dataToSendConfig(self.invokeId)
             self.sendData(query=query) """
             print('Starting measurement ...')
+            #query = self.protocol.writeVidFPS(self.invokeId, self.pubObj.cfg['videoFPS'])
             query = self.protocol.startStopProcedure(self.invokeId) #start procedure
             self.sendData(query=query)
             self.recvStream = True
@@ -285,7 +286,7 @@ class SoundCamConnector(object):
         heartrate = 1/ self.pubObj.cfg['heartbeatRate']
         heart_t = time.time()
         commonstatus_t = time.time()
-        canPrintLen = True
+        #canPrintLen = True
 
         while(self.processData):
             if(self.isConnected):
@@ -331,7 +332,7 @@ class SoundCamConnector(object):
                 """ if((now - heart_t) >= heartrate):
                     #send ACK to device
                     heart_t = now """
-                time.sleep(0.0001)
+                #time.sleep(0.0001)
             else:
                 print('Socket not connected!')
                 time.sleep(0.1)
@@ -376,7 +377,7 @@ class SoundCamConnector(object):
         dmsg:DataMessages.MDDataMessage = None
         isHdrPkt = False
         canPrintLen = True
-        cnt = 0
+        # cnt = 0
 
         while(canRun):
             #read queue and filter
@@ -391,28 +392,29 @@ class SoundCamConnector(object):
                     if(canPrintLen and (sz == self.bufSize)):
                         #print(inObj[:36]) #got header
                         isHdrPkt = True
-                        cnt += 1
+                        # cnt += 1
                     
                     if((sz < self.bufSize) and not isHdrPkt):
                         canPrintLen = True
-                        cnt += 1
-                        print('Total Data Count: ', cnt, ' -->Last buffer len: ', sz)
-                        cnt = 0
-                        res = self.protocol.getMatch(inObj)
-                        if(res):
-                            print('\n---------------------LAST BUFF READ------------------------------')
-                            print(res)
-                            print('Irregularity caught!!!!')
-                            exit(-99)
+                        # cnt += 1
+                        # print('Total Data Count: ', cnt, ' -->Last buffer len: ', sz)
+                    #     cnt = 0
+                    #     res = self.protocol.getMatch(inObj)
+                    #     if(res):
+                    #         print('\n---------------------LAST BUFF READ------------------------------')
+                    #         print(res)
+                    #         print('Irregularity caught!!!!')
+                    #         exit(-99)
                     
-                    if((sz == self.bufSize) and not isHdrPkt):
-                        cnt += 1
-                        continue
+                    # if((sz == self.bufSize) and not isHdrPkt):
+                    #     cnt += 1
+                    #     continue
                     
                     if(xsData):
                         inObj = xsData + inObj
                         data = io.BytesIO(inObj)
                         xsData = bytes()
+                        sz = len(inObj)
                         print('Prepended xsData ...')
                     else:
                         data:io.BytesIO = io.BytesIO(inObj)
@@ -467,6 +469,8 @@ class SoundCamConnector(object):
                     #reset buffers
                     inObj = data.read(-1)
                     data = io.BytesIO(inObj)
+                    canPrintLen = True
+                    isHdrPkt = True
                     #print('\nPrev Content: ', inObj)
                 
                 if(canPrintLen and isHdrPkt):
@@ -483,15 +487,15 @@ class SoundCamConnector(object):
                     #print('Pre-dmsg (if)', dmsg)
                     if((dmsg.Command == DataMessages.CommandCodes.DataMessage.value) and 
                        (dmsg.ObjectCount <= 10)):
-                        dt = data.read(8)
-                        dobj:DataObjects.DataObjHeader = protocol.unpackDataObjectHeader(dt)
-                        if(dobj.Id != DataObjects.Ids.VideoData.value):
-                            print('Object count: %i | Datamessage Length: %i' % (dmsg.ObjectCount, dmsg.DataLength + 8))
-                            print(dobj)
-                        canPrintLen = False
-                        isHdrPkt = False
-                        canPopfromQ = True
-                        continue
+                        # dt = data.read(8)
+                        # dobj:DataObjects.DataObjHeader = protocol.unpackDataObjectHeader(dt)
+                        # if(dobj.Id != DataObjects.Ids.VideoData.value):
+                        #     print('Object count: %i | Datamessage Length: %i' % (dmsg.ObjectCount, dmsg.DataLength + 8))
+                        #     print(dobj)
+                        # canPrintLen = False
+                        # isHdrPkt = False
+                        # canPopfromQ = True
+                        # continue
                         for i in range(dmsg.ObjectCount):
                             dt = data.read(8)
                             dobj:DataObjects.DataObjHeader = protocol.unpackDataObjectHeader(dt)
@@ -516,12 +520,11 @@ class SoundCamConnector(object):
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - len(curBf)
-                                    canPopfromQ = True
                                     #print('AcVid: subsequent triggered. remaining: ', remainingLen)
                                     break
 
                             elif(dobj.Id == DataObjects.Ids.VideoData.value):
-                                print('Got Video data')
+                                #print('Got Video data')
                                 curBf = data.read(dobj.Length)
                                 if(len(curBf) == dobj.Length):
                                     if(vidQ is not None):
@@ -530,7 +533,6 @@ class SoundCamConnector(object):
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - len(curBf)
-                                    canPopfromQ = True
                                     #print('Vid: subsequent triggered. remaining: ', remainingLen)
                                     break
                             
@@ -544,7 +546,6 @@ class SoundCamConnector(object):
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - len(curBf)
-                                    canPopfromQ = True
                                     #print('Spec: subsequent triggered. remaining: ', remainingLen)
                                     break
 
@@ -558,7 +559,6 @@ class SoundCamConnector(object):
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - len(curBf)
-                                    canPopfromQ = True
                                     #print('Audio: subsequent triggered. remaining: ', remainingLen)
                                     break
 
@@ -572,12 +572,11 @@ class SoundCamConnector(object):
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - len(curBf)
-                                    canPopfromQ = True
                                     #print('Raw: subsequent triggered. remaining: ', remainingLen)
                                     break
 
                             elif(dobj.Id == DataObjects.Ids.ThermalVideoData.value):
-                                #print('Got Thermal-Video data')
+                                print('Got Thermal-Video data')
                                 curBf = data.read(dobj.Length)
                                 if(len(curBf) == dobj.Length):
                                     if(thermalQ is not None):
@@ -586,7 +585,6 @@ class SoundCamConnector(object):
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - len(curBf)
-                                    canPopfromQ = True
                                     #print('Thermal: subsequent triggered. remaining: ', remainingLen)
                                     break
                             
@@ -599,7 +597,6 @@ class SoundCamConnector(object):
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - len(curBf)
-                                    canPopfromQ = True
                                     #print('CommonStatus: subsequent triggered. remaining: ', remainingLen)
                                     break
 
@@ -609,7 +606,12 @@ class SoundCamConnector(object):
                                 data.seek(curIdx) #restore
                                 canPopfromQ = False
                             else: #proceed normally
-                                canPopfromQ = True 
+                                canPopfromQ = True
+                        
+                        #print('For loop break')
+                        canPrintLen = False
+                        isHdrPkt = False
+                        canPopfromQ = True
                     else:
                         print('\nPacket discarded! - Size: ', len(inObj))
                         # print('Previous data (< 1460): \n', store)
@@ -622,9 +624,6 @@ class SoundCamConnector(object):
                             idx = res.span()[0] - 12
                             print(res, ' Hdr at: ', idx)
                             data = io.BytesIO(inObj[idx: ])
-                            #reset logic
-                            canPrintLen = True
-                            isHdrPkt = True
                             canPopfromQ = False
                         else:
                             canPopfromQ = True
