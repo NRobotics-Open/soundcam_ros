@@ -286,20 +286,21 @@ class SoundCamConnector(object):
         heart_t = time.time()
         commonstatus_t = time.time()
         canPrintLen = True
+
         while(self.processData):
             if(self.isConnected):
                 #print('Receiving ...')
                 res = self.sock.recv(self.bufSize)
                 if(res):
                     if(self.recvStream):
-                        sz = len(res)
-                        if(canPrintLen and (sz == 1460)):
-                            print(res[:36])
-                            canPrintLen = False
-                        if((sz < 1460) and not canPrintLen):
-                            canPrintLen = True
+                        # sz = len(res)
+                        # if(canPrintLen and (sz == 1460)):
+                        #     print(res[:36])
+                        #     canPrintLen = False
+                        # if((sz < 1460) and not canPrintLen):
+                        #     canPrintLen = True
                         #print('Incoming with length: ', len(res))
-                        #self.globalQ.put(res)
+                        self.globalQ.put(res)
                     else: #if not streaming
                         try:
                             """ if((self.protocol.DeviceState == 
@@ -373,7 +374,10 @@ class SoundCamConnector(object):
             
         
         dmsg:DataMessages.MDDataMessage = None
-        dmsgIdx = None
+        isHdrPkt = False
+        canPrintLen = True
+        cnt = 0
+
         while(canRun):
             #read queue and filter
             if(not globalQ.empty()):
@@ -381,14 +385,35 @@ class SoundCamConnector(object):
                     print('Global Queue Size: ', globalQ.qsize())
                 
                 if(canPopfromQ):
-                    print('Popping from Queue ...')
+                    #print('Popping from Queue ...')
                     inObj = globalQ.get()
+                    sz = len(inObj)
+                    if(canPrintLen and (sz == self.bufSize)):
+                        #print(inObj[:36]) #got header
+                        isHdrPkt = True
+                        cnt += 1
+                    
+                    if((sz < self.bufSize) and not isHdrPkt):
+                        canPrintLen = True
+                        cnt += 1
+                        print('Total Data Count: ', cnt, ' -->Last buffer len: ', sz)
+                        cnt = 0
+                        res = self.protocol.getMatch(inObj)
+                        if(res):
+                            print('\n---------------------LAST BUFF READ------------------------------')
+                            print(res)
+                            print('Irregularity caught!!!!')
+                            exit(-99)
+                    
+                    if((sz == self.bufSize) and not isHdrPkt):
+                        cnt += 1
+                        continue
                     
                     if(xsData):
                         inObj = xsData + inObj
                         data = io.BytesIO(inObj)
                         xsData = bytes()
-                        #print('Prepended xsData ...')
+                        print('Prepended xsData ...')
                     else:
                         data:io.BytesIO = io.BytesIO(inObj)
                 
@@ -426,188 +451,184 @@ class SoundCamConnector(object):
                             curBf = bytes()
                             contRead = False 
                             remainingLen = 0
-                            if(remainingLen == len(inObj)):
+                            if(remainingLen == sz):
                                 continue
-                            
-                            #cIdx = data.tell()
+
+                            #reset buffers
                             inObj = data.read(-1) # read all
                             data = io.BytesIO(inObj)
-                            #data.seek(cIdx) #restore io
+
                         else: #if not all bytes fetched, recalculate remaining length
                             remainingLen = remainingLen - len(rd)
                             #print('More data required. RemainingLength: ', remainingLen)
                             continue #go back to start
                 else:
-                    #print('previous Queue processing ...')
-                    #cIdx = data.tell()
+                    print('previous Queue processing ...')
+                    #reset buffers
                     inObj = data.read(-1)
                     data = io.BytesIO(inObj)
-                    #data.seek(cIdx) #restore
-
-                #check if writereqres
-                """ if((inObj[:1] == CommandCodes.WriteDataObjectRes.value) or 
-                   (inObj[:1] == CommandCodes.PrepareStateRes)):
-                    print('Detected write resp:', inObj, ' truncating ...' )
-                    inObj = b''
-                    time.sleep(5.0) """
+                    #print('\nPrev Content: ', inObj)
                 
-                if(inObj):
-                    dmsgIdx = protocol.getMatch(inObj)
-                    if(dmsgIdx):
-                        #print(dmsgIdx)
-                        hdr = inObj[dmsgIdx.span()[0] - 12:dmsgIdx.span()[0]]
-                        data.seek(dmsgIdx.span()[0])
-                        #hdr = data.read(12)
+                if(canPrintLen and isHdrPkt):
+                    if(inObj):
+                        hdr = data.read(12)
                         #print(hdr)
                         dmsg = protocol.unpackDataMessage(hdr)
-                        if(dmsg is None):
-                            #print('Dmsg decoding returned NONE!!')
-                            continue
                         #print(dmsg)
-                        #continue
                     else:
-                        if(inObj):
-                            print('Data BUT NO HEADER FOUND!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
-                            print('No header in: \n', inObj)
-                            time.sleep(0.5)
-                            #exit(-99)
-                        
+                        print('msg failure! -> empty buffer')
                         canPopfromQ = True
                         continue
-                else:
-                    canPopfromQ = True
-                    continue
-                
-                #debugging
-                #print('Generic buffer length: ', len(inObj))
-                
-                if(len(inObj) < 32): #if less than CommonStatus size
-                    xsData = inObj
-                    print('Low Buffer Length: ', len(xsData))
-                    canPopfromQ = True
-                    continue
 
-                #print('Pre-dmsg (if)', dmsg)
-                if(dmsg.Command == DataMessages.CommandCodes.DataMessage.value):
-                    #print('Object count: %i | Datamessage Length: %i' % (dmsg.ObjectCount, dmsg.DataLength))
-                    for i in range(dmsg.ObjectCount):
+                    #print('Pre-dmsg (if)', dmsg)
+                    if((dmsg.Command == DataMessages.CommandCodes.DataMessage.value) and 
+                       (dmsg.ObjectCount <= 10)):
                         dt = data.read(8)
                         dobj:DataObjects.DataObjHeader = protocol.unpackDataObjectHeader(dt)
-                        if(dobj is None):
-                            print('object header returned None!')
-                            time.sleep(3.0)
-                            exit(-99)
-                        else:
-                            if(dobj.Id > 50):
-                                print('\Message header: ', dt)
-                                print('Processing DataObject| Id: %i, Length: %i' % (dobj.Id, dobj.Length))
+                        if(dobj.Id != DataObjects.Ids.VideoData.value):
+                            print('Object count: %i | Datamessage Length: %i' % (dmsg.ObjectCount, dmsg.DataLength + 8))
+                            print(dobj)
+                        canPrintLen = False
+                        isHdrPkt = False
+                        canPopfromQ = True
+                        continue
+                        for i in range(dmsg.ObjectCount):
+                            dt = data.read(8)
+                            dobj:DataObjects.DataObjHeader = protocol.unpackDataObjectHeader(dt)
+                            if(dobj is None):
+                                print('object header returned None!')
+                                time.sleep(3.0)
                                 exit(-99)
-                                
-                        
-                        if(dobj.Id == DataObjects.Ids.AcousticVideoData.value):
-                            print('Got Acoustic-Video data')
-                            curBf = data.read(dobj.Length)
-                            if(len(curBf) == dobj.Length):
-                                if(acVidQ is not None):
-                                    acVidQ.put(io.BytesIO(curBf)) #push on q
-                            else: # trigger subsequent reads if bytes insufficient
-                                contRead = True
-                                curId = dobj.Id
-                                remainingLen = dobj.Length - len(curBf)
-                                canPopfromQ = True
-                                #print('AcVid: subsequent triggered. remaining: ', remainingLen)
-                                break
+                            else:
+                                if(dobj.Id > 50):
+                                    print('\Message header: ', dt)
+                                    print('Processing DataObject| Id: %i, Length: %i' % (dobj.Id, dobj.Length))
+                                    exit(-99)
+                                    
+                            
+                            if(dobj.Id == DataObjects.Ids.AcousticVideoData.value):
+                                print('Got Acoustic-Video data')
+                                curBf = data.read(dobj.Length)
+                                if(len(curBf) == dobj.Length):
+                                    if(acVidQ is not None):
+                                        acVidQ.put(io.BytesIO(curBf)) #push on q
+                                else: # trigger subsequent reads if bytes insufficient
+                                    contRead = True
+                                    curId = dobj.Id
+                                    remainingLen = dobj.Length - len(curBf)
+                                    canPopfromQ = True
+                                    #print('AcVid: subsequent triggered. remaining: ', remainingLen)
+                                    break
 
-                        elif(dobj.Id == DataObjects.Ids.VideoData.value):
-                            print('Got Video data')
-                            curBf = data.read(dobj.Length)
-                            if(len(curBf) == dobj.Length):
-                                if(vidQ is not None):
-                                    vidQ.put(io.BytesIO(curBf))
-                            else: # trigger subsequent reads if bytes insufficient
-                                contRead = True
-                                curId = dobj.Id
-                                remainingLen = dobj.Length - len(curBf)
-                                canPopfromQ = True
-                                #print('Vid: subsequent triggered. remaining: ', remainingLen)
-                                break
-                        
-                        elif(dobj.Id == DataObjects.Ids.SpectrumData.value):
-                            print('Got Spectrum data')
-                            curBf = data.read(dobj.Length)
-                            if(len(curBf) == dobj.Length):
-                                if(specQ is not None):
-                                    specQ.put(io.BytesIO(curBf)) #push on deque
-                            else: # trigger subsequent reads if bytes insufficient
-                                contRead = True
-                                curId = dobj.Id
-                                remainingLen = dobj.Length - len(curBf)
-                                canPopfromQ = True
-                                #print('Spec: subsequent triggered. remaining: ', remainingLen)
-                                break
+                            elif(dobj.Id == DataObjects.Ids.VideoData.value):
+                                print('Got Video data')
+                                curBf = data.read(dobj.Length)
+                                if(len(curBf) == dobj.Length):
+                                    if(vidQ is not None):
+                                        vidQ.put(io.BytesIO(curBf))
+                                else: # trigger subsequent reads if bytes insufficient
+                                    contRead = True
+                                    curId = dobj.Id
+                                    remainingLen = dobj.Length - len(curBf)
+                                    canPopfromQ = True
+                                    #print('Vid: subsequent triggered. remaining: ', remainingLen)
+                                    break
+                            
+                            elif(dobj.Id == DataObjects.Ids.SpectrumData.value):
+                                print('Got Spectrum data')
+                                curBf = data.read(dobj.Length)
+                                if(len(curBf) == dobj.Length):
+                                    if(specQ is not None):
+                                        specQ.put(io.BytesIO(curBf)) #push on deque
+                                else: # trigger subsequent reads if bytes insufficient
+                                    contRead = True
+                                    curId = dobj.Id
+                                    remainingLen = dobj.Length - len(curBf)
+                                    canPopfromQ = True
+                                    #print('Spec: subsequent triggered. remaining: ', remainingLen)
+                                    break
 
-                        elif(dobj.Id == DataObjects.Ids.AudioData.value):
-                            print('Got Audio data')
-                            curBf = data.read(dobj.Length)
-                            if(len(curBf) == dobj.Length):
-                                if(audQ is not None):
-                                    audQ.put(io.BytesIO(curBf)) #push on deque
-                            else: # trigger subsequent reads if bytes insufficient
-                                contRead = True
-                                curId = dobj.Id
-                                remainingLen = dobj.Length - len(curBf)
-                                canPopfromQ = True
-                                #print('Audio: subsequent triggered. remaining: ', remainingLen)
-                                break
+                            elif(dobj.Id == DataObjects.Ids.AudioData.value):
+                                print('Got Audio data')
+                                curBf = data.read(dobj.Length)
+                                if(len(curBf) == dobj.Length):
+                                    if(audQ is not None):
+                                        audQ.put(io.BytesIO(curBf)) #push on deque
+                                else: # trigger subsequent reads if bytes insufficient
+                                    contRead = True
+                                    curId = dobj.Id
+                                    remainingLen = dobj.Length - len(curBf)
+                                    canPopfromQ = True
+                                    #print('Audio: subsequent triggered. remaining: ', remainingLen)
+                                    break
 
-                        elif(dobj.Id == DataObjects.Ids.RawData.value):
-                            #print('Got Raw data')
-                            curBf = data.read(dobj.Length)
-                            if(len(curBf) == dobj.Length):
-                                if(rawQ is not None):
-                                    rawQ.put(io.BytesIO(curBf)) #push on deque
-                            else: # trigger subsequent reads if bytes insufficient
-                                contRead = True
-                                curId = dobj.Id
-                                remainingLen = dobj.Length - len(curBf)
-                                canPopfromQ = True
-                                #print('Raw: subsequent triggered. remaining: ', remainingLen)
-                                break
+                            elif(dobj.Id == DataObjects.Ids.RawData.value):
+                                #print('Got Raw data')
+                                curBf = data.read(dobj.Length)
+                                if(len(curBf) == dobj.Length):
+                                    if(rawQ is not None):
+                                        rawQ.put(io.BytesIO(curBf)) #push on deque
+                                else: # trigger subsequent reads if bytes insufficient
+                                    contRead = True
+                                    curId = dobj.Id
+                                    remainingLen = dobj.Length - len(curBf)
+                                    canPopfromQ = True
+                                    #print('Raw: subsequent triggered. remaining: ', remainingLen)
+                                    break
 
-                        elif(dobj.Id == DataObjects.Ids.ThermalVideoData.value):
-                            #print('Got Thermal-Video data')
-                            curBf = data.read(dobj.Length)
-                            if(len(curBf) == dobj.Length):
-                                if(thermalQ is not None):
-                                    thermalQ.put(io.BytesIO(curBf)) #push on deque
-                            else: # trigger subsequent reads if bytes insufficient
-                                contRead = True
-                                curId = dobj.Id
-                                remainingLen = dobj.Length - len(curBf)
-                                canPopfromQ = True
-                                #print('Thermal: subsequent triggered. remaining: ', remainingLen)
-                                break
-                        
-                        elif(dobj.Id == DataObjects.Ids.CommonStatus.value):
-                            print('Got CommonStatus data')
-                            curBf = data.read(dobj.Length)
-                            if(len(curBf) == dobj.Length):
-                                pass #TODO: update camera status
-                            else: # trigger subsequent reads if bytes insufficient
-                                contRead = True
-                                curId = dobj.Id
-                                remainingLen = dobj.Length - len(curBf)
-                                canPopfromQ = True
-                                #print('CommonStatus: subsequent triggered. remaining: ', remainingLen)
-                                break
+                            elif(dobj.Id == DataObjects.Ids.ThermalVideoData.value):
+                                #print('Got Thermal-Video data')
+                                curBf = data.read(dobj.Length)
+                                if(len(curBf) == dobj.Length):
+                                    if(thermalQ is not None):
+                                        thermalQ.put(io.BytesIO(curBf)) #push on deque
+                                else: # trigger subsequent reads if bytes insufficient
+                                    contRead = True
+                                    curId = dobj.Id
+                                    remainingLen = dobj.Length - len(curBf)
+                                    canPopfromQ = True
+                                    #print('Thermal: subsequent triggered. remaining: ', remainingLen)
+                                    break
+                            
+                            elif(dobj.Id == DataObjects.Ids.CommonStatus.value):
+                                print('Got CommonStatus data')
+                                curBf = data.read(dobj.Length)
+                                if(len(curBf) == dobj.Length):
+                                    pass #TODO: update camera status
+                                else: # trigger subsequent reads if bytes insufficient
+                                    contRead = True
+                                    curId = dobj.Id
+                                    remainingLen = dobj.Length - len(curBf)
+                                    canPopfromQ = True
+                                    #print('CommonStatus: subsequent triggered. remaining: ', remainingLen)
+                                    break
 
-                        #check if inMsg still has stuff that can be read
-                        curIdx = data.tell()
-                        if(data.read(-1)):
-                            data.seek(curIdx) #restore
+                            #check if inMsg still has stuff that can be read
+                            curIdx = data.tell()
+                            if(data.read(-1)):
+                                data.seek(curIdx) #restore
+                                canPopfromQ = False
+                            else: #proceed normally
+                                canPopfromQ = True 
+                    else:
+                        print('\nPacket discarded! - Size: ', len(inObj))
+                        # print('Previous data (< 1460): \n', store)
+                        # store = b''
+                        # print('Previous data (== 1460): \n', store2)
+                        # store2 = b''
+                        #print(inObj[:128])
+                        res = self.protocol.getMatch(inObj)
+                        if(res):
+                            idx = res.span()[0] - 12
+                            print(res, ' Hdr at: ', idx)
+                            data = io.BytesIO(inObj[idx: ])
+                            #reset logic
+                            canPrintLen = True
+                            isHdrPkt = True
                             canPopfromQ = False
-                        else: #proceed normally
-                            canPopfromQ = True 
+                        else:
+                            canPopfromQ = True
+                         
 
     '''Decodes and Publishes Video data'''
     def publishVideo(self, q:Queue, canRun:bool, dataConn:Connection):

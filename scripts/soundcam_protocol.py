@@ -363,7 +363,6 @@ class CameraProtocol(object):
         self.patterns.append(re.compile(b'\x0e\x00\x02\x00 0\x00\x00', re.DOTALL)) #acoustic
         self.patterns.append(re.compile(b'\x0f\x00\x03\x00& \x00\x00', re.DOTALL)) #spectrum
         self.patterns.append(re.compile(b'\x10\x00\x03\x00\x1e@\x00\x00', re.DOTALL)) #audio
-        #self.patterns.append(re.compile(b'\x10\x00\x03\x00\x1e@\x00\x00', re.DOTALL)) #prepare re
 
     
     def __post_init__(self):
