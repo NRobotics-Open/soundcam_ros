@@ -1,5 +1,5 @@
 from enum import Enum
-import dataclasses, struct, socket
+import dataclasses, struct, socket, io
 from dataclasses import dataclass, field, fields
 from collections import namedtuple
 from bitarray import bitarray
@@ -48,7 +48,7 @@ class Device(object):
         CAESoundCamUltra_200_kHz = 0xCAEACA03
         CAESoundCamSensor_48_8_kHz = 0xCAEACA11
         CAESoundCamSensor_200_kHz = 0xCAEACA12
-        CAESoundCamUltraSensor_200_kHz = 0xCAEACA13
+        CAESoundCamUltraSensor_200_kHz = 0xCAEACA13 #this
         CAESoundCam_dFE_64_I2S_48_8_kHz = 0xCAEDFE01
         CAESoundCamNewBionic_112_48_8_kHz = 0xCAEDBA02
     
@@ -671,49 +671,71 @@ class CameraProtocol(object):
             print(e)
             return None
     
-
-    def unpackDecodeVideoData(self, response:bytes):
-        if(response is None):
-            return
-        dta_len = int.from_bytes(response[4:8], byteorder='little')
-        dstr = '<Q2H' + str(dta_len - 12) + 's'
-        dssize = struct.Struct(dstr).size
-        vid = DataObjects.MDVideoData._make(struct.unpack(dstr, response))
-        print(vid)
-        return dssize
+    ''' Unpacks, Decodes the received video bytes '''
+    def unpackDecodeVideoData(self, data:io.BytesIO):
+        try:
+            dstr = '<Q2H'
+            unpack = struct.unpack(dstr, data.read(struct.calcsize(dstr)))
+            # vid = DataObjects.MDVideoData._make()
+            # datasize = vid.VResolution * vid.HResolution
+            datasize = unpack[1] * unpack[2]
+            vidframe:np.array = np.array(
+                        struct.unpack('<' + str(datasize) +'B', data.read(-1)), dtype=np.uint8).reshape(unpack[2], unpack[1])
+            return (unpack, vidframe)
+        except Exception as ex:
+            print(ex)
+            return (None, None)
     
-    def unpackDecodeAcousticVideoData(self, response:bytes):
-        if(response is None):
-            return
-        dta_len = int.from_bytes(response[4:8], byteorder='little')
-        dstr = '<Q6L' + str(dta_len - 32) + 'f'
-        dssize = struct.Struct(dstr).size
-        vid = DataObjects.MDAcousticImageData._make(struct.unpack(dstr, response))
-        print(vid)
-        return dssize
+    ''' Unpacks, Decodes the received acoustic video bytes '''
+    def unpackDecodeAcousticVideoData(self, data:io.BytesIO):
+        try:
+            dstr = '<Q6L'
+            dssize = struct.calcsize(dstr)
+            unpack = struct.unpack(dstr, data.read(dssize))
+            #acvid = DataObjects.MDAcousticImageData._make()
+            #data.seek(dssize)
+            frameData:np.array = np.array(
+                struct.unpack('<3072f', data.read(-1)), dtype=np.float32).reshape(48, 64)
+            return (unpack, frameData)
+        except Exception as ex:
+            print(ex)
+            return (None, None)
     
-    def unpackDecodeSpectrumData(self, response:bytes):
-        if(response is None):
-            return
-        dta_len = int.from_bytes(response[4:8], byteorder='little')
-        sline_len = (dta_len - 38)/2
-        dstr = '<2HLQfH2L' + str(sline_len) + 'f' + str(sline_len) + 'f' + '4f'
-        dssize = struct.Struct(dstr).size
-        spec = DataObjects.MDSpectrumData1._make(struct.unpack(dstr, response))
-        print(spec)
-        return dssize
+    ''' Unpacks, Decodes the received spectrum bytes '''
+    def unpackDecodeSpectrumData(self, data:io.BytesIO):
+        try:
+            dstr = '<QfH2L'
+            dssize = struct.calcsize(dstr)
+            spc1 = struct.unpack(dstr, data.read(dssize))
+            data_global:np.array = np.array(
+                struct.unpack('<1024f', data.read(4096)), dtype=np.float32)
+            #data_global[np.where(np.isinf(data_global))] = 0.0
+            data_local:np.array = np.array(
+                struct.unpack('<1024f', data.read(4096)), dtype=np.float32)
+            #data_local[np.where(np.isinf(data_local))] = 0.0
+            dstr = '4f'
+            spc2 = struct.unpack(dstr, data.read(dssize))
+            return (spc1, spc2, data_global, data_local)
+        except Exception as ex:
+            print(ex)
+            return (None, None, None, None)
     
-    def unpackDecodeAudioData(self, response:bytes):
-        if(response is None):
-            return
-        dta_len = int.from_bytes(response[4:8], byteorder='little')
-        audio_len = (dta_len - 30)/2
-        dstr = '<2HLQ2h' + str(audio_len) + 'l' + str(audio_len) + 'l' + 'dH2L'
-        dssize = struct.Struct(dstr).size
-        audio = DataObjects.MDAudioData1._make(struct.unpack(dstr, response))
-        print(audio)
-        return dssize
+    ''' Unpacks, Decodes the received audio bytes '''
+    def unpackDecodeAudioData(self, data:io.BytesIO):
+        try:
+            dstr = '<Q2h'
+            aud1 = struct.unpack(dstr, data.read(struct.calcsize(dstr)))
+            data_plus = np.array(struct.unpack('<2048i', data.read(8192)), dtype=np.int32)
+            data_minus = np.array(struct.unpack('<2048i', data.read(8192)), dtype=np.int32)
+            dstr = '<dH2L'
+            aud2 = struct.unpack(dstr, data.read(-1))
+            audioData = data_plus + data_minus
+            return (aud1, aud2, audioData)
+        except Exception as ex:
+            print(ex)
+            return (None, None, None)
     
+    ''' Unpacks, Decodes the received raw bytes '''
     def unpackDecodeRawData(self, response:bytes):
         if(response is None):
             return
@@ -722,19 +744,33 @@ class CameraProtocol(object):
         dstr = '<2HLQL' + str(rawdt_len) + 'ld'
         dssize = struct.Struct(dstr).size
         data = DataObjects.MDRawdata._make(struct.unpack(dstr, response))
-        print(data)
-        return dssize
     
-    def unpackDecodeThermalVideoData(self, response:bytes):
-        if(response is None):
-            return
-        dta_len = int.from_bytes(response[4:8], byteorder='little')
-        vid_len = (dta_len - 654)/2
-        dstr = '<2HLQ3H' + str(vid_len) + 'H'
-        dssize = struct.Struct(dstr).size
-        data = DataObjects.MDThermalVideoData._make(struct.unpack(dstr, response))
-        print(data)
-        return dssize
+    ''' Unpacks, Decodes the received thermal video bytes 
+        Format 0x04:
+        640 byte header + 38400 byte thermal image data.
+        Header: TBD (ask CAE for details)
+        Thermal image data: One U16 per pixel, line by line from left to right and top to bottom,
+        each U16 value indicates the temperature in 0.1K.
+
+        Format 0x05:
+        640 byte header + 38400 byte thermal image data.
+        Header: TBD (ask CAE for details)
+        Thermal image data: One U16 per pixel, line by line from left to right and top to bottom,
+        each U16 value indicates the temperature in 0.01K.
+    '''
+    def unpackDecodeThermalVideoData(self, data:io.BytesIO):
+        try:
+            dstr = '<Q3H'
+            dssize = struct.calcsize(dstr)
+            vid = DataObjects.MDThermalVideoData._make(struct.unpack(dstr, data.read(dssize)))
+            datasize = vid.VResolution * vid.HResolution
+            data.seek(640 + dssize) #skipping header TODO: Get Header info from CAE
+            vidframe:np.array = np.array(
+                         struct.unpack('<' + str(datasize) +'H', data.read(-1)), dtype=np.uint16).reshape(vid.VResolution, vid.HResolution)
+            return (vid, vidframe)
+        except Exception as ex:
+            print(ex)
+            return (None, None)
 
     ''' Methods to write data to the device '''
     def writeDistance(self, invokeId, distance:int)->bytes:
@@ -857,15 +893,15 @@ class CameraProtocol(object):
         query += dataQuery
         return query
     
-    def dataToSendConfig(self, invokeId, dataToSend:int = 0)->bytes:
+    def dataToSendConfig(self, invokeId, dataToSend1:int = 0, dataToSend2:int = 0)->bytes:
         pkg = DataObjects.DataObjPk._make((DataObjects.Ids.DataToSend, '<2H8B'))
         dataLength = 4 + struct.Struct(pkg.Struct).size
         query = struct.pack('<BBHLL', CommandCodes.WriteDataObjectReq.value, invokeId, 0, dataLength, 1)
-        if(dataToSend == 0):
+        if(dataToSend1 == 0):
             '''AcVid|Vid|Thermal|Audio|MicLvl|MicRaw|Spectra|SingleMicData'''
-            dataToSend = ba2int(bitarray('11010010', endian='little'))
+            dataToSend1 = ba2int(bitarray('11010010', endian='little'))
         query += struct.pack(pkg.Struct, *(DataObjects.Ids.DataToSend.value, 
-                                            3, dataToSend, 0, 0, 0, 0, 0, 0, 0))
+                                            3, dataToSend1, 0, dataToSend2, 0, 0, 0, 0, 0))
         return query
     
     '''
