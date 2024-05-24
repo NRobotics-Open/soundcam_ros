@@ -14,18 +14,26 @@ from bitarray import bitarray
 import numpy as np, cv2
 np.set_printoptions(threshold=sys.maxsize)
 
-from matplotlib.animation import FuncAnimation
+from matplotlib.animation import FuncAnimation, FFMpegWriter, writers
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from soundcam_protocol import CommandCodes, DataMessages, Device, DataObjects, \
     CameraProtocol
 import multiprocessing
-from multiprocessing import Process, Queue, Pipe
-from multiprocessing.connection import Connection
-from collections import deque
+from multiprocessing import Process, Queue, Semaphore
+from multiprocessing import shared_memory
+import SharedArray as sa
+
 from soundcam_ros import SoundcamROS
+from utils import SoundUtils
+
+import acoustics.decibel as bel
 
 #http stream
 #from soundcam_streamer import StreamingServer, StreamingOutput, StreamingHandler
+    
 
 FIRMWARE_VERSION = '2.8.3.0'
 CONNECT_TIMEOUT = 25 #seconds
@@ -58,6 +66,22 @@ class SoundCamConnector(object):
         self.debug = debug
         self.testing = False
         self.invokeId = 1
+
+        #external classes
+        self.semaphores = [Semaphore(), Semaphore(), Semaphore()]
+        self.shmnames=['npaudiomem', 'npglobalspecmem', 'nplocalspecmem']
+        self.scamUtils = SoundUtils()
+        try:
+            sa.delete(self.shmnames[0]) #audio buffer
+            sa.delete(self.shmnames[1]) #spec global buffer
+            sa.delete(self.shmnames[2]) #spec local buffer
+        except:
+            pass
+        self.audioBuffer = sa.create("shm://" + self.shmnames[0], (self.scamUtils.audlength, 1))
+        self.globalSpecBuffer = sa.create("shm://" + self.shmnames[1], (self.scamUtils.window, 1023))
+        self.localSpecBuffer = sa.create("shm://" + self.shmnames[2], (self.scamUtils.window, 1023))
+        self.scamUtils.initializeSharedBuffers(semls=self.semaphores, shmnamesls=self.shmnames)
+
         self.pubObj = SoundcamROS()
 
         #check SoundCam Connectivity and Initialize connection
@@ -73,6 +97,7 @@ class SoundCamConnector(object):
 
         #prepare queues
         self.processes = list()
+        self.threads = list()
         self.qDict = dict()
 
         #post-processing setup
@@ -89,6 +114,7 @@ class SoundCamConnector(object):
         if(self.pubObj.cfg['publishVideo']):
             self.vidQ = Queue()
             self.qDict[SoundCamConnector.DTypes.VID.name] = self.vidQ
+            #self.threads.append(Thread(target=self.publishVideo, args=(self.vidQ, self.processData), daemon=True))
             self.processes.append(Process(target=self.publishVideo, args=(self.vidQ, self.processData)))
         if(self.pubObj.cfg['publishAcVideo']):
             self.acVidQ = Queue()
@@ -98,11 +124,13 @@ class SoundCamConnector(object):
         if(self.pubObj.cfg['publishSpectrum']):
             self.specQ = Queue()
             self.qDict[SoundCamConnector.DTypes.SPECTRUM.name] = self.specQ
-            self.processes.append(Process(target=self.publishSpectrum, args=(self.specQ, self.processData)))
+            self.processes.append(Process(target=self.publishSpectrum, 
+                                          args=(self.specQ, self.processData, self.scamUtils)))
         if(self.pubObj.cfg['publishAudio']):
             self.audQ = Queue()
             self.qDict[SoundCamConnector.DTypes.AUDIO.name] = self.audQ
-            self.processes.append(Process(target=self.publishAudio, args=(self.audQ, self.processData)))
+            self.processes.append(Process(target=self.publishAudio, 
+                                          args=(self.audQ, self.processData, self.scamUtils)))
         if(self.pubObj.cfg['publishThermal']):
             self.thermalQ = Queue()
             self.qDict[SoundCamConnector.DTypes.THERMAL.name] = self.thermalQ
@@ -125,13 +153,14 @@ class SoundCamConnector(object):
         self.qDict[SoundCamConnector.DTypes.GLOBAL.name] = self.globalQ 
         self.processes.append(
             Process(target=self.streamFilter, args=(self.qDict, self.processData, self.protocol)))
-        
+
         for proc in self.processes:
             proc.start()
         
-        #start cyclic thread
-        th = Thread(target=self.receiveCyclic, daemon=True)
-        th.start()
+        #start threads
+        self.threads.append(Thread(target=self.receiveCyclic, daemon=True))
+        for th in self.threads:
+            th.start()
 
         #Note: All data is sent as Little Endian!
     
@@ -197,7 +226,7 @@ class SoundCamConnector(object):
         query = self.protocol.setState(invokeId=self.invokeId)
         self.sendData(query=query)
         print('Sent FinishRequest ...')
-        self.recvStream = False
+        self.recvStream = False 
 
     def disconnect(self):
         if(self.isConnected):
@@ -209,11 +238,19 @@ class SoundCamConnector(object):
             except Exception as ex:
                 print('Error closing connection: ', ex)
         try:
+            for th in self.threads:
+                th.join()
             #self.processData = False
             for proc in self.processes:
                 proc.join()
         except Exception as ex:
             pass
+    
+    ''' Release shared memory blocks '''
+    def release_shared(self):
+        sa.delete(self.shmnames[0])
+        self.sem_main.acquire()
+        self.sem_main.release()
 
     '''Send data over Network'''
     def sendData(self, query:bytes):
@@ -310,7 +347,6 @@ class SoundCamConnector(object):
         # heart_t = time.time()
         commonstatus_t = time.time()
         #canPrintLen = True
-
         while(self.processData.is_set()):
             if(self.isConnected):
                 #print('Receiving ...')
@@ -401,7 +437,6 @@ class SoundCamConnector(object):
         isHdrPkt = False
         canPrintLen = True
         # cnt = 0
-
         while(canRun.is_set()):
             #read queue and filter
             if(not globalQ.empty()):
@@ -754,17 +789,27 @@ class SoundCamConnector(object):
         print('Starting acoustic video decoder and publisher ...')
         new_frame_t = 0
         prev_frame_t = 0
-        dBCutoff = 33
+        dBCutoff = 33 #42.671717
         acQ: Queue = None
         if(self.overlayBA[SoundCamConnector.OverlayTypes.ACOUSTIC.value]):
             acQ = self.qDict[SoundCamConnector.DTypes.O_ACVID.name]
         
         def visualizeVideo(frame):
             nonlocal new_frame_t, prev_frame_t, dBCutoff
+            mean = bel.dbmean(frame)
             #frame[np.where(np.all(frame[..])]
             #truth_tbl = frame[...] < dBCutoff
             #frame[np.where(frame[...] < dBCutoff)] = 0.0
-            frame = cv2.normalize(frame, None, 0,255, cv2.NORM_MINMAX, cv2.CV_8UC1)
+            # if(mean < dBCutoff):
+            #     frame = np.zeros((3072,1))
+            #print(frame)
+            frame -= 20
+            frame /=100
+            #frame = cv2.normalize(frame, None, 0,255, cv2.NORM_MINMAX, cv2.CV_8UC1)
+            frame *= 255
+            frame = frame.astype('uint8')
+            #print('/n+++++++++++++++++++++++++-----------------------------------')
+            #print(frame)
             # frame = np.interp(frame, 
             #                   (self.pubObj.cfg['minimum_db'], self.pubObj.cfg['maximum_db']), 
             #                   (0, 255))
@@ -810,6 +855,7 @@ class SoundCamConnector(object):
                         acQ.put(decoded)
                 if(self.pubObj.cfg['visualizeAcVideo']):
                     visualizeVideo(decoded[1])
+                    #self.scamUtils.printMetrics(decoded[1])
                 
                 hits += 1
                 if(time.time() - start_t >= 1.0):
@@ -820,15 +866,29 @@ class SoundCamConnector(object):
             cv2.destroyAllWindows()
 
     '''Decodes and Publishes Spectrum data'''
-    def publishSpectrum(self, q:Queue, canRun:multiprocessing.Event):
+    def publishSpectrum(self, q:Queue, canRun:multiprocessing.Event, scamObj:SoundUtils):
         print('Starting spectrum decoder and publisher ...')
+
+        saveSpectrum = False
+        specData = []
+        t = 30 #seconds
+        record_t = time.time()
+
         spcQ: Queue = None
         #if(self.overlayBA[SoundCamConnector.OverlayTypes.SPECTRUM.value]):
         spcQ = self.qDict[SoundCamConnector.DTypes.O_SPEC.name]
-
+        
+        hits = 0
+        start_t = time.time()
         while(canRun.is_set()):
             if(not q.empty()):
                 decoded = self.protocol.unpackDecodeSpectrumData(q.get())
+                scamObj.updateSpectrumBuffer(decoded)
+                # res = self.scamUtils.computeEnergy()
+                # print(f"Mean Energy: {res[0]:.4f}")
+                # print(f"Standard deviation of energy: {res[1]:.4f}")
+                
+                #print('Spectrum:', decoded[0], ' ' ,decoded[1])
                 if(spcQ and not spcQ.full()): #push spectrum data to overlay_Q
                     spcQ.put(decoded)
                 else:
@@ -838,19 +898,43 @@ class SoundCamConnector(object):
                         pass
                     if(spcQ):
                         spcQ.put(decoded)
+                if(saveSpectrum):
+                    specData.append(decoded[2])
+                    if(time.time() - record_t >= t):
+                        sr = int(decoded[0][1] * 1024 * 2) #nyquist
+                        print('saving spectrum with sampling frequency (Hz): ', sr)
+                        # specData = np.concatenate(specData)
+                        # self.scamUtils.writeAudio('outputSpec_mute.wav', specData, sr)
+                        self.scamUtils.writeOutVar('whitenoise_mat_t2')
+                        saveSpectrum = False
+                
+                hits += 1
+                if(time.time() - start_t >= 1.0):
+                    print('===============================================================Spectrum @ %i Hz' % hits)
+                    hits = 0
+                    start_t = time.time()
 
     '''Decodes and Publishes Audio data'''
-    def publishAudio(self, q:Queue, canRun:multiprocessing.Event):
+    def publishAudio(self, q:Queue, canRun:multiprocessing.Event, scamObj:SoundUtils):
         print('Starting audio decoder and publisher ...')
+
+        saveAudio = False
+        audioData_plus = []
+        audioData_minus = []
+        t = 30 #seconds
+        record_t = time.time()
 
         audQ: Queue = None
         #if(self.overlayBA[SoundCamConnector.OverlayTypes.AUDIO.value] or self.pubObj.cfg['visualizeAudio']):
         audQ = self.qDict[SoundCamConnector.DTypes.O_AUD.name]
         start_t = time.time()
         hits = 0
+
         while(canRun.is_set()):
             if(not q.empty()):
                 decoded = self.protocol.unpackDecodeAudioData(q.get())
+                scamObj.updateAudioBuffer(decoded) #update ringbuffer
+
                 if(audQ and not audQ.full()): #push audio data to overlay_Q
                     audQ.put(decoded)
                 else:
@@ -860,6 +944,20 @@ class SoundCamConnector(object):
                         pass
                     if(audQ):
                         audQ.put(decoded)
+                if(saveAudio):
+                    audioData_plus.append(decoded[2])
+                    audioData_minus.append(decoded[3])
+                    if(time.time() - record_t >= t):
+                        sr = 1/ decoded[1][0]
+                        print('\n--------------Saving audio with sampling frequency (Hz): ', sr)
+                        audioData_plus = np.concatenate(audioData_plus)
+                        audioData_minus = np.concatenate(audioData_minus)
+                        #audioData /= np.max(np.abs(audioData),axis=0)
+                        #self.scamUtils.writeAudio('outputAudio_single_plus.wav', audioData_plus, sr)
+                        #self.scamUtils.writeAudio('outputAudio_single_minus.wav', audioData_minus, sr)
+                        self.scamUtils.writeAudio('outputLong.wav', (audioData_plus + audioData_minus), sr)
+                        saveAudio = False
+                        
                 hits += 1
                 if(time.time() - start_t >= 1.0):
                     print('================================================================Audio @ %i Hz' % hits)
@@ -914,50 +1012,112 @@ class SoundCamConnector(object):
     '''Updates the plot'''
     def plotUpdater(self, frame):
         if(self.pubObj.cfg['visualizeAudio']):
+            # self.sem_main.acquire()
+            # print(f"Arr in localinst: {self.audioBuffer[-5]}")
+            # self.sem_main.release()
             if(not self.audQ_RT.empty()):
-                self.plotLines[0].set_ydata(self.audQ_RT.get()[2])
+                data = self.audQ_RT.get()
+                audio = data[2] + data[3]
+                lims = np.max(audio) + 20000 # plus buffer range
+                self.ax[0].set_ylim(top=lims, bottom=-lims)
+                self.plotLines[0].set_ydata(audio)
+        
         if(self.pubObj.cfg['visualizeSpectrum']):
             if(not self.spcQ_RT.empty()):
                 data = self.spcQ_RT.get()
+                #self.scamUtils.updateSpectrumBuffer(data)
                 self.plotLines[1].set_ydata(data[2]) #global
-                #self.plotLines[2].set_ydata(data[3]) #local
-                #self.plotLines[3].set_ydata((data[2]/data[3])/4)
+                self.plotLines[2].set_ydata(data[3]) #local
+                
+                # spectogram plotting
+                self.ax_img = self.scamUtils.updateSpectogramPlot()
+                #self.fig.colorbar(self.ax_img, ax=self.ax[2], format="%+2.f dB")
+                #print(arr, ' here 1')
+                # self.matrix.append(data[2])
+                # spec = np.array(self.matrix, dtype=np.float32)
+                # spec.shape = -1, 1023
+                #self.ax_img = self.ax[2].imshow(arr.transpose(), origin='lower', aspect='auto', cmap='inferno', extent=[0, 5, 0, 100000])
+                #self.ax_img.set_array(self.matrix)
+                #librosa.display.specshow(self.scamUtils.compute_stft(), ax=self.ax[2])
+                #self.plotLines[3] = ax_img
+                #print('Got image update')
+            return self.plotLines, self.ax_img
         return self.plotLines
+    
+
     
     '''Displays live AUDIO/SPECTRUM data'''
     def displayLiveData(self, canRun:multiprocessing.Event):
         print('Starting visual display')
-        fig, ax = plt.subplots(nrows=2, ncols=1, figsize=(16, 12))
-        self.plotLines = list()
         self.spcQ_RT: Queue = self.qDict[SoundCamConnector.DTypes.O_SPEC.name]
         self.audQ_RT: Queue = self.qDict[SoundCamConnector.DTypes.O_AUD.name]
+        #wait for data
+        while(True):
+            print('Awaiting data ...')
+            if(self.scamUtils.canRunAnalysis()):
+                print('Ready to run analysis ...')
+                break
+            else:
+                #print('Length of array: ', len(self.scamUtils.specGlobalBuffer))
+                time.sleep(0.5)
+
+        self.ax:list[Axes] = []
+        fig:Figure = None
+        fig, self.ax = plt.subplots(nrows=3, ncols=1, figsize=(16, 12))
+        self.plotLines:list[Line2D] = []
         
-        ax[0].set_title('Audio Data')
+        #Audio Plot
+        self.ax[0].set_title('Audio Data')
         self.focusedAudio = np.zeros(2048, dtype=np.int32)
         x1 = np.linspace(1, 2048, 2048)
-        ax[0].set_ylim(top=self.pubObj.cfg['maximum_value'], 
-                       bottom=self.pubObj.cfg['minimum_value'])  # set safe limit to ensure that all data is visible.
-        ax[0].set_facecolor((0.18, 0.176, 0.18))
-        audlines, = ax[0].plot(x1, self.focusedAudio, color=(0.85, 1, 0.0))
+        self.ax[0].set_ylim(top=5000, bottom=-5000)
+        self.ax[0].set_facecolor((0.18, 0.176, 0.18))
+        audlines, = self.ax[0].plot(x1, self.focusedAudio, 
+                                    color=(0.85, 1, 0.0), label='focused audio')
         self.plotLines.append(audlines)
 
-        ax[1].set_title('Spectrum Data')
-        x2 = np.linspace(0, 100000, 1024)
-        ax[1].set_ylim(top=self.pubObj.cfg['maximum_spdb'], 
-                       bottom=self.pubObj.cfg['minimum_spdb'])  # set safe limit to ensure that all data is visible.
-        ax[1].set_facecolor((1, 1, 1))
-        sline1, = ax[1].plot(x2, np.zeros(1024, dtype=np.float32), color=(0.0, 0.0, 0.0))
+        #Linear Spectrum Plot
+        self.ax[1].set_title('Linear Spectrum Plot')
+        x2 = np.linspace(0, 100000, 1023)
+        self.ax[1].set_ylim(top=self.pubObj.cfg['maximum_spdb'], 
+                    bottom=self.pubObj.cfg['minimum_spdb'])  # set safe limit to ensure that all data is visible.
+        self.ax[1].set_facecolor((1, 1, 1))
+        sline1, = self.ax[1].plot(x2, np.zeros(1023, dtype=np.float32), 
+                                  color=(0.0, 0.0, 0.0), label='global spectrum')
         self.plotLines.append(sline1)
-        sline2, = ax[1].plot(x2, np.zeros(1024, dtype=np.float32), color=(0.95, 0.4, 0.1))
+        sline2, = self.ax[1].plot(x2, np.zeros(1023, dtype=np.float32), 
+                                  color=(0.95, 0.4, 0.1), label='local spectrum')
         self.plotLines.append(sline2)
-        sline3, = ax[1].plot(x2, np.zeros(1024, dtype=np.float32), color=(0.1, 0.4, 0.8))
-        self.plotLines.append(sline3)
+
+        #Spectrogram Plot
+        if(self.pubObj.cfg['visualizeSpectrum']):
+            self.ax[2].set_title('Spectrum Analysis')
+            self.ax[2].set_xlabel('Time (seconds)')
+            self.ax[2].set_ylabel('Frequency (Hz)')
+
+            self.ax_img = self.scamUtils.initSpectogram(ax=self.ax[2])
+            fig.colorbar(self.ax_img, ax=self.ax[2], format="%+2.f dB")
         
+        fig.legend()
+        fig.tight_layout()
+
         self.visualUp = True #for logic in startStream
-        ani = FuncAnimation(fig, self.plotUpdater, interval=10, blit=True, cache_frame_data=False)
-        plt.show()
+        ani = FuncAnimation(fig, self.plotUpdater, interval=1, blit=False, cache_frame_data=False)
+        # Writer = writers['ffmpeg']
+        # writer = Writer(fps=15, metadata=dict(artist='Me'), bitrate=1800) 
+        # ffmpegWritter = FFMpegWriter(fps=15)      
+        
+        try:
+            plt.show()
+            print('Figure closed')
+            # ani.save('stream.mov', writer=ffmpegWritter)
+        except Exception as ex:
+            print(ex)
+
         while(canRun.is_set()):
             pass
+
+        
         plt.close()
 
     def displayProcess(self, canRun:multiprocessing.Event):
@@ -987,6 +1147,7 @@ class SoundCamConnector(object):
 
 if __name__ == '__main__':
     camObj = SoundCamConnector(debug=True)
+    atexit.register(camObj.release_shared)
     atexit.register(camObj.disconnect)
 
     if(camObj.connect()):

@@ -715,7 +715,7 @@ class CameraProtocol(object):
             #data_local[np.where(np.isinf(data_local))] = 0.0
             dstr = '4f'
             spc2 = struct.unpack(dstr, data.read(dssize))
-            return (spc1, spc2, data_global, data_local)
+            return (spc1, spc2, data_global[1:], data_local[1:])
         except Exception as ex:
             print(ex)
             return (None, None, None, None)
@@ -729,8 +729,8 @@ class CameraProtocol(object):
             data_minus = np.array(struct.unpack('<2048i', data.read(8192)), dtype=np.int32)
             dstr = '<dH2L'
             aud2 = struct.unpack(dstr, data.read(-1))
-            audioData = data_plus + data_minus
-            return (aud1, aud2, audioData)
+            #audioData = data_plus + data_minus
+            return (aud1, aud2, data_plus, data_minus)
         except Exception as ex:
             print(ex)
             return (None, None, None)
