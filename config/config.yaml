@@ -6,42 +6,50 @@ use_ros: True
 
 #streaming parameters
 distance: 3500 #mm
-minFrequency: 4300
-maxFrequency: 67700
+minFrequency: 18500
+maxFrequency: 55000
 camera_W: 640
 camera_H: 480
 acimageFPS: 50 #fps
 acAvg: 0 #0 - fast 1 - slow 2 - impulse
 deviceState: 5 #0-Idle 1-Measuring 2-Streaming 3-Service_1 4-Ultrasonic 5-Ultrasonic+
-dataToSend: 75 #11010010
+dataToSend1: 75 #11010010 (75) (data) -> AcVid, Vid, ThermalVid, LocalSound, MicLevels, MicRaw, Spectra, SingleMic
+dataToSend2: 1 #1000000 (filters) -> LocalSound, LevelFiltered, RawDataFiltered, IRGain
 heartbeatRate: 300 #Hz
 cameraLighting: 0 #0-off 1-on
 videoFPS: 30 #fps
 
-publish_video: True
-publish_acoustic_video: True
-publish_spectrum: True
-publish_audio: True
-publish_thermal: True
+#Acoustic Video config
+scalingMode: 2 #0-off, 1-Auto (scale with respect to the max in the set region), 2-Smart
+dynamic: 10.0 #dB
+maximum: 54.2 #dB if 0 -> use the max of last 10 seconds
+crest: 15.0 #dB [5 - 15]
 
-#post-processing
-publish_video_acoustic_overlay: False
+
+
+publishVideo: True
+publishAcVideo: True
+publishSpectrum: True
+publishAudio: True
+publishThermal: True
+publishOverlay: True #unused
 
 #visualization parameters
-visualize_audio: False
-minimum_value: -300000
-maximum_value: 300000
+visualizeVideo: False
+visualizeThermal: False
+visualizeAudio: False
 
-visualize_video: False
-
-visualize_acoustic_video: False
+visualizeAcVideo: True
 minimum_db: 0
-maximum_db: 100
+maximum_db: 120
 
-visualize_spectrum: False
-minimum_frequency: -120
-maximum_frequency: 120
+visualizeSpectrum: False
+minimum_spdb: -120 
+maximum_spdb: 120
 
+#post-processing
+visualizeOverlay: False  #forces(sets) -> visualizeVideo
+overlayConfig: '0000' # [Acoustic, Spectrum, Audio, Thermal]
 
 #camera topics
 camera_topic: /state
