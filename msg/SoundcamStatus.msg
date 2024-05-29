@@ -1,10 +1,10 @@
 std_msgs/Header header
 
 std_msgs/String deviceId
-std_msgs/Int protocolVersion
+uint8 protocolVersion
 std_msgs/String hardwareVersion
 std_msgs/String firmwareVersion
-std_msgs/Int deviceError #0-> OK
+uint8 deviceError #0-> OK
 std_msgs/Float32 cpuTemperature
 std_msgs/Float32 temperatureTop
 std_msgs/Float32 temperatureBottom
