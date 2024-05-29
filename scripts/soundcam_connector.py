@@ -1186,6 +1186,27 @@ class SoundCamConnector(object):
                         exit(-99)
             except Exception as ex:
                 print(ex)
+    
+    '''
+        Utility methods
+    '''
+
+    '''
+        Returns camera status
+            - deviceId
+            - protocolVersion
+            - hardwareVersion
+            - firmwareVersion
+            - deviceError
+            - cpuTemperature
+            - temperatureTop
+            - temperatureBottom
+            - deviceState
+            - subState
+            - deviceIP
+    '''
+    def getStatus(self): #TODO to be implemented 
+        pass
         
 
 if __name__ == '__main__':
