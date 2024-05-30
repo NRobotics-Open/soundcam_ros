@@ -1,0 +1,48 @@
+#Server Operations
+std_msgs/Header header
+
+uint8 CMD_TYPE_CONFIG = 0 #let the backend know what of call this is
+uint8 CMD_TYPE_OP = 1
+#Command
+uint8 command 
+
+#Presets (Lookup Table)
+uint8 SCALING_MODE_FIXED = 0
+uint8 SCALING_MODE_AUTO = 1
+uint8 SCALING_MODE_SMART = 2
+uint8 scalingMode  #the value will be either 0, 1 or 2 (above)
+  
+float32 minFrequency   #minimum configured frequency
+float32 maxFrequency   #maximum configured frequency
+float32 dynamic
+float32 crest          #5-15
+float32 distance       # approx. distance of sound source
+float32 recordTime     #how long to record the stream
+
+bool useScan
+
+uint8 VIDEO_STREAM = 0
+uint8 AUDIO_STREAM = 1
+uint8 ACOUSTIC_STREAM = 2
+uint8 THERMAL_STREAM = 3
+uint8 SPECTRUM_STREAM = 4
+uint8 OVERLAY_STREAM = 5
+uint8 ALL = 6
+string mediaType      #'VIDEO_STREAM|ACOUSTIC_STREAM'
+
+#Input Operational Parameters 
+#==============================
+uint8 RESET_CAMERA = 0
+uint8 START_RECORD = 1
+uint8 STOP_RECORD = 2
+uint8 SNAPSHOT = 3
+uint8 SET_DYNAMIC_CREST = 4 #op_command1 = DYNAMIC, op_command2 = CREST
+uint8 SET_SCALING_MODE = 5 #0-off, 1-Auto, 2-Smart
+uint8 op_command1
+uint8 op_command2
+
+#(When use the Input Operational Paramaters - also send the media type when calling "START_RECORD")
+
+---
+uint8 results
+std_msgs/Bool ack # use just 'bool' instead of 'std_msgs/Bool' (?)
