@@ -1,4 +1,4 @@
-std_msgs/Header header
+std_msgs/Header header #frame_id:=soundcam
 
 std_msgs/String deviceId
 uint8 protocolVersion

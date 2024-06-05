@@ -1,25 +1,14 @@
 #Server Operations
 std_msgs/Header header
 
-uint8 CMD_TYPE_CONFIG = 0 #let the backend know what of call this is
+uint8 CMD_TYPE_CONFIG = 0
 uint8 CMD_TYPE_OP = 1
-#Command
-uint8 command 
+#Command :let the backend know what of call this is
+uint8 command
 
-#Presets (Lookup Table)
-uint8 SCALING_MODE_FIXED = 0
-uint8 SCALING_MODE_AUTO = 1
-uint8 SCALING_MODE_SMART = 2
-uint8 scalingMode  #the value will be either 0, 1 or 2 (above)
-  
-float32 minFrequency   #minimum configured frequency
-float32 maxFrequency   #maximum configured frequency
-float32 dynamic
-float32 crest          #5-15
-float32 distance       # approx. distance of sound source
-float32 recordTime     #how long to record the stream
-
-bool useScan
+#Presets (Lookup Table)     
+float32 captureTime     #how long to record the stream
+soundcam_ros/Preset preset
 
 uint8 VIDEO_STREAM = 0
 uint8 AUDIO_STREAM = 1
@@ -37,7 +26,9 @@ uint8 START_RECORD = 1
 uint8 STOP_RECORD = 2
 uint8 SNAPSHOT = 3
 uint8 SET_DYNAMIC_CREST = 4 #op_command1 = DYNAMIC, op_command2 = CREST
-uint8 SET_SCALING_MODE = 5 #0-off, 1-Auto, 2-Smart
+uint8 SET_SCALING_MODE = 5 #0-off ->(op_command1=maximum), 1-Auto, 2-Smart -> (op_command1=dynamic, op_command2=crest)
+uint8 SCAN_DETECT = 6    #op_command1(scan) -> 1-true, 0-false | op_command2(detect)-> 1-true, 0-false
+ 
 uint8 op_command1
 uint8 op_command2
 

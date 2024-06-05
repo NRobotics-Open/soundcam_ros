@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
 add_message_files(
    FILES
    SoundcamStatus.msg
+   Preset.msg
  )
 
 ## Generate services in the 'srv' folder
