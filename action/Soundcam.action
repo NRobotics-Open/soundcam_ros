@@ -1,0 +1,16 @@
+# uint32 delay
+# int32 numCaptures
+# float32 recordTime
+# string streamType
+# uint32 msnId
+# string msnName
+# uint32 wpId
+# float32 wpX
+# float32 wpY
+# float32 wpTheta
+diagnostic_msgs/KeyValue[] parameters 
+---
+bool result
+---
+int32 capture_count
+std_msgs/Time currentTime

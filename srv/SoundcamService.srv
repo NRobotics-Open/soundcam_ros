@@ -4,7 +4,7 @@ std_msgs/Header header
 uint8 CMD_TYPE_CONFIG = 0
 uint8 CMD_TYPE_OP = 1
 #Command :let the backend know what of call this is
-uint8 command
+uint8 command_type
 
 #Presets (Lookup Table)     
 float32 captureTime     #how long to record the stream
@@ -22,18 +22,22 @@ string mediaType      #'VIDEO_STREAM|ACOUSTIC_STREAM'
 #Input Operational Parameters 
 #==============================
 uint8 RESET_CAMERA = 0
-uint8 START_RECORD = 1
+uint8 START_RECORD = 1      #op_command1 = {0->BW Image, 3->Thermal Image, 5-> Overlayed Image}
 uint8 STOP_RECORD = 2
-uint8 SNAPSHOT = 3
+uint8 CANCEL_RECORD = 3
+uint8 SNAPSHOT = 4          #op_command1 = {0->BW Image, 3->Thermal Image, 5-> Overlayed Image}
 uint8 SET_DYNAMIC_CREST = 4 #op_command1 = DYNAMIC, op_command2 = CREST
-uint8 SET_SCALING_MODE = 5 #0-off ->(op_command1=maximum), 1-Auto, 2-Smart -> (op_command1=dynamic, op_command2=crest)
-uint8 SCAN_DETECT = 6    #op_command1(scan) -> 1-true, 0-false | op_command2(detect)-> 1-true, 0-false
- 
-uint8 op_command1
-uint8 op_command2
+uint8 SET_SCALING_MODE = 5  #0-off ->(op_command1=maximum), 1-Auto, 2-Smart -> (op_command1=dynamic, op_command2=crest)
+uint8 SCAN_DETECT = 6       #op_command1(scan) -> 1-true, 0-false | op_command2(detect)-> 1-true, 0-false
+uint8 command
 
-#(When use the Input Operational Paramaters - also send the media type when calling "START_RECORD")
+float32 op_command1
+float32 op_command2
 
+#if command_type=OP_CMD: -> set extras {"key":"value"}
+diagnostic_msgs/KeyValue[] extras               
 ---
+uint8 SUCCESS = 0
+uint8 FAIL = 1
 uint8 results
 std_msgs/Bool ack # use just 'bool' instead of 'std_msgs/Bool' (?)

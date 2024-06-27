@@ -1,10 +1,10 @@
-#camera parameters
-ip: '169.254.169.138'
+#Camera parameters
+ip: '192.168.3.101'
 port: 6340
 protocol: 3
-use_ros: True
+system_run: False #if False: turns off all visualizations & uses ROS publishers
 
-#streaming parameters
+#Streaming parameters
 distance: 3500 #mm
 minFrequency: 18500
 maxFrequency: 55000
@@ -13,9 +13,9 @@ camera_H: 480
 acimageFPS: 50 #fps
 acAvg: 0 #0 - fast 1 - slow 2 - impulse
 deviceState: 5 #0-Idle 1-Measuring 2-Streaming 3-Service_1 4-Ultrasonic 5-Ultrasonic+
-dataToSend1: 75 #11010010 (75) (data) -> AcVid, Vid, ThermalVid, LocalSound, MicLevels, MicRaw, Spectra, SingleMic
+dataToSend1: 79 #11110010 (75) (data) -> AcVid, Vid, ThermalVid, LocalSound, MicLevels, MicRaw, Spectra, SingleMic
 dataToSend2: 1 #1000000 (filters) -> LocalSound, LevelFiltered, RawDataFiltered, IRGain
-heartbeatRate: 300 #Hz
+heartbeatRate: 300 #Hz - Not used
 cameraLighting: 0 #0-off 1-on
 videoFPS: 30 #fps
 
@@ -25,16 +25,13 @@ dynamic: 10.0 #dB
 maximum: 54.2 #dB if 0 -> use the max of last 10 seconds
 crest: 15.0 #dB [5 - 15]
 
+processVideo: True
+processAcVideo: True
+processSpectrum: True
+processAudio: True
+processThermal: True
 
-
-publishVideo: True
-publishAcVideo: True
-publishSpectrum: True
-publishAudio: True
-publishThermal: True
-publishOverlay: True #unused
-
-#visualization parameters
+#Visualization parameters -> if 'system_run' is True
 visualizeVideo: False
 visualizeThermal: False
 visualizeAudio: False
@@ -47,20 +44,21 @@ visualizeSpectrum: False
 minimum_spdb: -120 
 maximum_spdb: 120
 
-#post-processing
-visualizeOverlay: False  #forces(sets) -> visualizeVideo
-overlayConfig: '0000' # [Acoustic, Spectrum, Audio, Thermal]
+#Post-processing
+visualizeOverlay: True  #forces(sets) -> visualizeVideo
+overlayConfig: '1000' # [Acoustic, Spectrum, Audio, Thermal] -> only Acoustic impl'td
 
-#camera topics
-camera_topic: /state
 
-#service servers
-server_name: /SoundcamServer
-
-#stream topics
-video_topic: /video
-acousticvideo_topic: /video/acoustic
-spectrum_topic: /spectrum
-audio_topic: /audio
-thermalvideo_topic: /video/thermal
+## ROS PARAMETERS
+frame: 'soundcam'
+detection_xy_offset: 25  #offset for centering the detected blob - NOT USED
+mean_energy_thresh: 20.0
+energy_std_dev: 10.0
+trigger_time: 2.0 #seconds
+max_megabytes: 1000 #Megabytes
+min_record_time: 1.0 #seconds
+max_record_time: 5.0 #seconds
+rest_time: 5.0 #seconds
+pose_topic: '/robot_pose'
+capture_feedback_topic: '/wp/capture/status'
 

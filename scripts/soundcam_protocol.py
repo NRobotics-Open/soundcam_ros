@@ -4,12 +4,14 @@ from dataclasses import dataclass, field, fields
 from collections import namedtuple
 from bitarray import bitarray
 from bitarray.util import int2ba, ba2int
-from datetime import datetime
 from operator import itemgetter
 from typing import List
 import numpy as np
 import re
+from multiprocessing.managers import BaseProxy, BaseManager
 
+Features = namedtuple('Features', 'LED Ultrasound Microcontroller Battery IR TachoTrigger')
+MDDataMessage = namedtuple('MDDataMessage', 'Command InvokeId Reserved DataLength ObjectCount')
 class CommandCodes(Enum):
     ResetReq = 0x80
     ResetRes = 0x00
@@ -38,8 +40,6 @@ class DataMessages(object):
         StartProcRes = 2
         StopProcRes = 3
         MAX_SIZE = 4
-    
-    MDDataMessage = namedtuple('MDDataMessage', 'Command InvokeId Reserved DataLength ObjectCount')
 
 class Device(object):
     class DeviceIDs(Enum):
@@ -337,7 +337,6 @@ class CameraProtocol(object):
                             SubState Error Step0 Step_1 TemperatureCPU TemperatureTop TemperatureBottom \
                             CPULoad_1 CPULoad_2')
     GenericResponse = namedtuple('GenericResponse', 'Command InvokeId Reserved Status DataLength')
-    Features = namedtuple('Features', 'LED Ultrasound Microcontroller Battery IR TachoTrigger')
     Status = namedtuple('Status', 'isListenerCreated isConnectedHost isBitfileLoaded isBitfileRunning isTransferActive')
     ReadDataObjectResponse = namedtuple('ReadDataObjectResponse', 'Command InvokeId Reserved Status DataLength DataObjectCount')
 
@@ -349,6 +348,7 @@ class CameraProtocol(object):
         self.DeviceState = Device.DeviceStates.Idle
         self.SubState = Device.SubStates.Idle
         self.isConfigured = False
+        self.hasInitialStatus = False
 
         self.stateProcStatus = bitarray(DataMessages.Status.MAX_SIZE.value)
         self.stateProcStatus.setall(0)
@@ -378,15 +378,24 @@ class CameraProtocol(object):
                                                   self.MACAddress, self.Features1, self.Status2)
         return summary
     
-    def getMatch(self, buf):
-        match = None
-        for ptn in self.patterns:
-            res = ptn.search(buf)
-            if(match is None):
-                match = res
-            elif(res and (res.span()[0] < match.span()[0])):
-                match = res
-        return match
+    '''
+            PARAMETER GETTERS
+    '''
+    def p_isConfigured(self):
+        return self.isConfigured
+    def p_hasInitialStatus(self):
+        return self.hasInitialStatus
+    def p_getPatterns(self):
+        return self.patterns
+
+    '''
+            OTHER METHODS
+    '''
+    def getDeviceState(self):
+        try:
+            return (self.DeviceState, self.SubState)
+        except Exception as ex:
+            return None
 
     def extractData(self, input)->None:
         if(type(input) is CameraProtocol.GenericResponse):
@@ -406,6 +415,7 @@ class CameraProtocol(object):
                             'IPAddress', 'PCBSerialNumber', 'Features1', 'Features2', 'Features3', 'Status2', 'ConnectIP', 'DeviceState', \
                             'SubState', 'Error', 'Step0', 'Step_1', 'TemperatureCPU', 'TemperatureTop', 'TemperatureBottom', \
                             'CPULoad_1', 'CPULoad_2')(input._asdict())
+            self.hasInitialStatus = True
         elif(type(input) is DataObjects.SDCommonStatus):
             _, _, _, self.Error, DeviceState, SubState = \
                 itemgetter('ObjetID', 'ObjectType' ,'Length', 'ErrorCode',\
@@ -415,136 +425,136 @@ class CameraProtocol(object):
     
     def unpackDecodeResponse(self, response:bytes)->None:
         if(response):
-            if(len(response) < 1460):
-                print(response, ' Length:', len(response))
-        if(self.pcProtocolVersion == 3):
-            unpacked:List[CameraProtocol | DataObjects] = list()
-            cmd = int.from_bytes(response[:1], byteorder='little')
-            if(cmd == CommandCodes.IdentificationRes.value):
-                unpacked.append(CameraProtocol.IdResponse._make(struct.unpack('<2BH7LQ4L4s4s12s2L4B4L2H3f2L', response[:128])))
-            elif(cmd == CommandCodes.ReadDataObjectRes.value): #Read Response
-                dstr = '<2BH3L'
-                arr_idx = struct.Struct(dstr).size
-                rdobj_unpacked = CameraProtocol.ReadDataObjectResponse._make(struct.unpack(dstr, response[:arr_idx]))
-                for i in range(rdobj_unpacked.DataObjectCount):
-                    dtobjId = int.from_bytes(response[arr_idx:arr_idx+2], byteorder='little')
-                    if(dtobjId == DataObjects.Ids.CommonStatus.value): #CommonStatus  -------------------------------Status Data
-                        dstr = '<2H4L'
-                        unpacked.append(DataObjects.SDCommonStatus._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += (unpacked[-1].Length + 8) # dtobjLen->(value) + dtobjType->2 + dtobId->2 + dtobjLen->4  
-                    elif(dtobjId == DataObjects.Ids.CameraStatus.value): #CameraStatus
-                        dstr = '<2HL8s3f6L4BL9B'
-                        unpacked.append(DataObjects.SDCameraStatus._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += (unpacked[-1].Length + 8) # dtobjLen->(value) + dtobjType->2 + dtobId->2 + dtobjLen->4
-                    elif(dtobjId == DataObjects.Ids.Distance.value): #Distance    -------------------------------Parameters
-                        dstr = '<2HL'
-                        unpacked.append(DataObjects.PDistance._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 8  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.FrequencyRange.value): #FrequencyRange
-                        dstr = '<2H2L'
-                        unpacked.append(DataObjects.PFrequencyRange._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 12  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.CameraResolution.value): #CameraResolution
-                        dstr = '<4H'
-                        unpacked.append(DataObjects.PCameraResolution._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 8  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.CameraBrightness.value): #CameraBrightness
-                        dstr = '<2HL'
-                        unpacked.append(DataObjects.PCameraBrightness._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 8  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.AcousticFrameRate.value): #AcousticFrameRate
-                        dstr = '<2HL'
-                        unpacked.append(DataObjects.PAcousticFrameRate._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 8  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.AcousticAveraging.value): #AcousticAveraging
-                        dstr = '<2HL'
-                        unpacked.append(DataObjects.PAcousticAveraging._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 8  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.VideoFrameRate.value): #VideoFrameRate
-                        dstr = '<2HL'
-                        unpacked.append(DataObjects.PVideoFrameRate._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 8  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.CameraLighting.value): #CameraLighting
-                        dstr = '<2HL'
-                        unpacked.append(DataObjects.PCameraLighting._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 8  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.LocalSoundTargetCoordinates.value): #LocalSoundTargetCoordinates
-                        dstr = '<2H2h'
-                        unpacked.append(DataObjects.PLocalSoundTargetCoordinates._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 8  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.MicrophoneIndex.value): #MicrophoneIndex
-                        dstr = '<4H'
-                        unpacked.append(DataObjects.PMicrophoneIndex._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 8  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.ArraysAvailable.value): #ArraysAvailable
-                        dstr = '<2HLH'
-                        dssize = struct.Struct(dstr).size
-                        tmp_unpack = DataObjects.PArraysAvailable._make(struct.unpack(dstr, response[arr_idx:(arr_idx + dssize)]))
-                        arr_idx += dssize
-                        print('Idx after partial read: ', arr_idx) #@ 26 (16 + 10)
-                        for x in range(tmp_unpack.NumArrays):
-                            arr_len = response[arr_idx] #13
-                            dstr = '<' + str(arr_len) + 's'
+            # if(len(response) < 1460):
+            #     print(response, ' Length:', len(response))
+            if(self.pcProtocolVersion == 3):
+                unpacked:List[CameraProtocol | DataObjects] = list()
+                cmd = int.from_bytes(response[:1], byteorder='little')
+                if(cmd == CommandCodes.IdentificationRes.value):
+                    unpacked.append(CameraProtocol.IdResponse._make(struct.unpack('<2BH7LQ4L4s4s12s2L4B4L2H3f2L', response[:128])))
+                elif(cmd == CommandCodes.ReadDataObjectRes.value): #Read Response
+                    dstr = '<2BH3L'
+                    arr_idx = struct.Struct(dstr).size
+                    rdobj_unpacked = CameraProtocol.ReadDataObjectResponse._make(struct.unpack(dstr, response[:arr_idx]))
+                    for i in range(rdobj_unpacked.DataObjectCount):
+                        dtobjId = int.from_bytes(response[arr_idx:arr_idx+2], byteorder='little')
+                        if(dtobjId == DataObjects.Ids.CommonStatus.value): #CommonStatus  -------------------------------Status Data
+                            dstr = '<2H4L'
+                            unpacked.append(DataObjects.SDCommonStatus._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += (unpacked[-1].Length + 8) # dtobjLen->(value) + dtobjType->2 + dtobId->2 + dtobjLen->4  
+                        elif(dtobjId == DataObjects.Ids.CameraStatus.value): #CameraStatus
+                            dstr = '<2HL8s3f6L4BL9B'
+                            unpacked.append(DataObjects.SDCameraStatus._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += (unpacked[-1].Length + 8) # dtobjLen->(value) + dtobjType->2 + dtobId->2 + dtobjLen->4
+                        elif(dtobjId == DataObjects.Ids.Distance.value): #Distance    -------------------------------Parameters
+                            dstr = '<2HL'
+                            unpacked.append(DataObjects.PDistance._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 8  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.FrequencyRange.value): #FrequencyRange
+                            dstr = '<2H2L'
+                            unpacked.append(DataObjects.PFrequencyRange._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 12  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.CameraResolution.value): #CameraResolution
+                            dstr = '<4H'
+                            unpacked.append(DataObjects.PCameraResolution._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 8  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.CameraBrightness.value): #CameraBrightness
+                            dstr = '<2HL'
+                            unpacked.append(DataObjects.PCameraBrightness._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 8  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.AcousticFrameRate.value): #AcousticFrameRate
+                            dstr = '<2HL'
+                            unpacked.append(DataObjects.PAcousticFrameRate._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 8  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.AcousticAveraging.value): #AcousticAveraging
+                            dstr = '<2HL'
+                            unpacked.append(DataObjects.PAcousticAveraging._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 8  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.VideoFrameRate.value): #VideoFrameRate
+                            dstr = '<2HL'
+                            unpacked.append(DataObjects.PVideoFrameRate._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 8  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.CameraLighting.value): #CameraLighting
+                            dstr = '<2HL'
+                            unpacked.append(DataObjects.PCameraLighting._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 8  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.LocalSoundTargetCoordinates.value): #LocalSoundTargetCoordinates
+                            dstr = '<2H2h'
+                            unpacked.append(DataObjects.PLocalSoundTargetCoordinates._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 8  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.MicrophoneIndex.value): #MicrophoneIndex
+                            dstr = '<4H'
+                            unpacked.append(DataObjects.PMicrophoneIndex._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 8  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.ArraysAvailable.value): #ArraysAvailable
+                            dstr = '<2HLH'
                             dssize = struct.Struct(dstr).size
-                            unpacked.append(DataObjects.PArrays._make(struct.unpack(dstr, response[(arr_idx + 1):((arr_idx + 1) + dssize)]))) # +1 to skip '\r' in Name
-                            arr_idx +=  (1 + dssize) # sizeof(len value) + dssize
-                    elif(dtobjId == DataObjects.Ids.ArraySerialNumber.value): #ArraySerialNumber
-                        dta_len = int.from_bytes(response[arr_idx + 4: arr_idx + 8], byteorder='little')
-                        dstr = '<2HL' + str(dta_len) + 's'
-                        dssize = struct.Struct(dstr).size
-                        unpacked.append(DataObjects.PArraySerialNumber._make(struct.unpack(dstr, response[arr_idx:(arr_idx + dssize)])))
-                        arr_idx += dssize  # DynamicLength
-                    elif(dtobjId == DataObjects.Ids.NoOfStreamingSamples.value): #NoOfStreamingSamples
-                        dstr = '<2HL'
-                        unpacked.append(DataObjects.PNoOfStreamingSamples._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 8  # FixedLength
+                            tmp_unpack = DataObjects.PArraysAvailable._make(struct.unpack(dstr, response[arr_idx:(arr_idx + dssize)]))
+                            arr_idx += dssize
+                            print('Idx after partial read: ', arr_idx) #@ 26 (16 + 10)
+                            for x in range(tmp_unpack.NumArrays):
+                                arr_len = response[arr_idx] #13
+                                dstr = '<' + str(arr_len) + 's'
+                                dssize = struct.Struct(dstr).size
+                                unpacked.append(DataObjects.PArrays._make(struct.unpack(dstr, response[(arr_idx + 1):((arr_idx + 1) + dssize)]))) # +1 to skip '\r' in Name
+                                arr_idx +=  (1 + dssize) # sizeof(len value) + dssize
+                        elif(dtobjId == DataObjects.Ids.ArraySerialNumber.value): #ArraySerialNumber
+                            dta_len = int.from_bytes(response[arr_idx + 4: arr_idx + 8], byteorder='little')
+                            dstr = '<2HL' + str(dta_len) + 's'
+                            dssize = struct.Struct(dstr).size
+                            unpacked.append(DataObjects.PArraySerialNumber._make(struct.unpack(dstr, response[arr_idx:(arr_idx + dssize)])))
+                            arr_idx += dssize  # DynamicLength
+                        elif(dtobjId == DataObjects.Ids.NoOfStreamingSamples.value): #NoOfStreamingSamples
+                            dstr = '<2HL'
+                            unpacked.append(DataObjects.PNoOfStreamingSamples._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 8  # FixedLength
 
-                    elif(dtobjId == DataObjects.Ids.DataToSend.value): #DataToSend    -------------------------------Measurement Data
-                        dstr = '<2H8B'
-                        unpacked.append(DataObjects.MDDataToSend._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
-                        arr_idx += 12  # FixedLength
-                    elif(dtobjId == DataObjects.Ids.VideoData.value): #VideoData
-                        result = self.unpackDecodeVideoData(response=response[arr_idx:])
-                        if(result is not None):
-                            arr_idx += result
-                    elif(dtobjId == DataObjects.Ids.AcousticVideoData.value): #AcousticVideoData
-                        result = self.unpackDecodeAcousticVideoData(response=response[arr_idx:])
-                        if(result is not None):
-                            arr_idx += result
-                    elif(dtobjId == DataObjects.Ids.SpectrumData.value): #SpectrumData
-                        result = self.unpackDecodeSpectrumData(response=response[arr_idx:])
-                        if(result is not None):
-                            arr_idx += result
-                    elif(dtobjId == DataObjects.Ids.AudioData.value): #AudioData
-                        result = self.unpackDecodeAudioData(response=response[arr_idx:])
-                        if(result is not None):
-                            arr_idx += result
-                    elif(dtobjId == DataObjects.Ids.RawData.value): #RawData
-                        result = self.unpackDecodeRawData(response=response[arr_idx:])
-                        if(result is not None):
-                            arr_idx += result
-                    elif(dtobjId == DataObjects.Ids.ThermalVideoData.value): #ThermalVideoData
-                        result = self.unpackDecodeThermalVideoData(response=response[arr_idx:])
-                        if(result is not None):
-                            arr_idx += result
+                        elif(dtobjId == DataObjects.Ids.DataToSend.value): #DataToSend    -------------------------------Measurement Data
+                            dstr = '<2H8B'
+                            unpacked.append(DataObjects.MDDataToSend._make(struct.unpack(dstr, response[arr_idx:(arr_idx+struct.Struct(dstr).size)])))
+                            arr_idx += 12  # FixedLength
+                        elif(dtobjId == DataObjects.Ids.VideoData.value): #VideoData
+                            result = self.unpackDecodeVideoData(response=response[arr_idx:])
+                            if(result is not None):
+                                arr_idx += result
+                        elif(dtobjId == DataObjects.Ids.AcousticVideoData.value): #AcousticVideoData
+                            result = self.unpackDecodeAcousticVideoData(response=response[arr_idx:])
+                            if(result is not None):
+                                arr_idx += result
+                        elif(dtobjId == DataObjects.Ids.SpectrumData.value): #SpectrumData
+                            result = self.unpackDecodeSpectrumData(response=response[arr_idx:])
+                            if(result is not None):
+                                arr_idx += result
+                        elif(dtobjId == DataObjects.Ids.AudioData.value): #AudioData
+                            result = self.unpackDecodeAudioData(response=response[arr_idx:])
+                            if(result is not None):
+                                arr_idx += result
+                        elif(dtobjId == DataObjects.Ids.RawData.value): #RawData
+                            result = self.unpackDecodeRawData(response=response[arr_idx:])
+                            if(result is not None):
+                                arr_idx += result
+                        elif(dtobjId == DataObjects.Ids.ThermalVideoData.value): #ThermalVideoData
+                            result = self.unpackDecodeThermalVideoData(response=response[arr_idx:])
+                            if(result is not None):
+                                arr_idx += result
 
-                    if(self.debug):
-                        print('Next Idx(Len): ', arr_idx)
-                        return None
+                        if(self.debug):
+                            print('Next Idx(Len): ', arr_idx)
+                            return None
 
 
-            elif((cmd == CommandCodes.ResetRes.value) or 
-                 (cmd == CommandCodes.StartProcedureRes.value) or 
-                 (cmd == CommandCodes.StopProcedureRes.value) or
-                 (cmd == CommandCodes.PrepareStateRes.value) or 
-                 (cmd == CommandCodes.FinishStateRes.value) or 
-                 (cmd == CommandCodes.WriteDataObjectRes.value)):
-                unpacked.append(CameraProtocol.GenericResponse._make(struct.unpack('<2BH2L', response)))
+                elif((cmd == CommandCodes.ResetRes.value) or 
+                    (cmd == CommandCodes.StartProcedureRes.value) or 
+                    (cmd == CommandCodes.StopProcedureRes.value) or
+                    (cmd == CommandCodes.PrepareStateRes.value) or 
+                    (cmd == CommandCodes.FinishStateRes.value) or 
+                    (cmd == CommandCodes.WriteDataObjectRes.value)):
+                    unpacked.append(CameraProtocol.GenericResponse._make(struct.unpack('<2BH2L', response)))
 
-            if(self.debug and (unpacked is not None)):
-                #print('Decoding protocol version %i message' % self.pcProtocolVersion)
-                print('Unpacked: ', unpacked)
-        self.decode(unpackedLs=unpacked)
+                if(self.debug and (unpacked is not None)):
+                    #print('Decoding protocol version %i message' % self.pcProtocolVersion)
+                    print('Unpacked: ', unpacked)
+            self.decode(unpackedLs=unpacked)
     
     def decode(self, unpackedLs:list)->None:
         if(len(unpackedLs) == 0):
@@ -565,7 +575,7 @@ class CameraProtocol(object):
                     devState = Device.DeviceStates(unpacked.DeviceState)
                     subState = Device.SubStates(unpacked.SubState)
                     deviceIP = socket.inet_ntoa(struct.pack('!L', unpacked.IPAddress))
-                    features1 = CameraProtocol.Features._make(int2ba(unpacked.Features1, 6, endian='little'))
+                    features1 = Features._make(int2ba(unpacked.Features1, 6, endian='little'))
                     status2 = CameraProtocol.Status._make(int2ba(unpacked.Status2, 5, endian='little'))
                     data = unpacked._replace(DeviceId = devId, SiliconSerialNumber = sserialNum,
                         BootloaderVersion = bootLoaderVer, FirmwareVersion = firmwareVer,              
@@ -580,7 +590,8 @@ class CameraProtocol(object):
                         print('Command failed')
                         self.processError(unpacked.Status1)
                 elif(type(unpacked) is CameraProtocol.GenericResponse):
-                    print('Response [Reset/State/Procedure]')
+                    if(self.debug):
+                        print('Response [Reset/State/Procedure]')
                     data = unpacked
                     if(unpacked.Status == 0):
                         if(data.Command == CommandCodes.StartProcedureRes.value):
@@ -621,6 +632,34 @@ class CameraProtocol(object):
                 #print(data)
                 self.extractData(data)
 
+    def decodeDate(self, input:bytes)-> str:
+        if(len(input) == 4):#date
+            return '{0}-{1}-{2}'.format(int.from_bytes(input[:2], 'little'), input[2], input[3])
+        else: #datetime
+            return '{0}-{1}-{2} {3}:{4}:{5} {6}'.format(int.from_bytes(input[:2], 'little'), 
+                                                input[2], input[3], input[4], input[5], input[6])
+    
+    '''Returns the time in seconds since the FPGA start'''
+    def decodeTimeStamp(self, input:int)-> float:
+        return input/48828.125
+
+    def getDeviceStatus(self):
+        if(self.p_hasInitialStatus()):
+            return dict({'deviceId': str(self.DeviceId),
+                        'protocolVersion': self.DeviceProtocolVersion,
+                        'hardwareVersion': str(self.HardwareVersion), 
+                        'firmwareVersion': str(self.FirmwareVersion),
+                        'deviceError': self.DeviceError,
+                        'cpuTemperature': self.TemperatureCPU,
+                        'temperatureTop': self.TemperatureTop,
+                        'temperatureBottom': self.TemperatureBottom,
+                        'deviceState': self.DeviceState,
+                        'subState': self.SubState,
+                        'deviceIP': self.IPAddress,
+                        'deviceMAC': self.MACAddress, 
+                        'Features': self.Features1})
+        return None
+
     def processError(self, data:GenericResponse):
         for e in Device.ErrorCodes:
             if(e.value == data.Status):
@@ -643,22 +682,11 @@ class CameraProtocol(object):
         self.stateProcStatus[DataMessages.Status.PrepareStateRes.value] = 0
         self.stateProcStatus[DataMessages.Status.StopProcRes.value] = 1
         self.stateProcStatus[DataMessages.Status.StartProcRes.value] = 0
-
-    def decodeDate(self, input:bytes)-> str:
-        if(len(input) == 4):#date
-            return '{0}-{1}-{2}'.format(int.from_bytes(input[:2], 'little'), input[2], input[3])
-        else: #datetime
-            return '{0}-{1}-{2} {3}:{4}:{5} {6}'.format(int.from_bytes(input[:2], 'little'), 
-                                                input[2], input[3], input[4], input[5], input[6])
     
-    '''Returns the time in seconds since the FPGA start'''
-    def decodeTimeStamp(self, input:int)-> float:
-            return input/48828.125
-    
-    def unpackDataMessage(self, response:bytes)->DataMessages.MDDataMessage:
+    def unpackDataMessage(self, response:bytes)->MDDataMessage:
         dstr = '<2BH2L'
         try:
-            return DataMessages.MDDataMessage._make(struct.unpack(dstr, response))
+            return MDDataMessage._make(struct.unpack(dstr, response))
         except Exception as e:
             print(e)
             return None
@@ -666,7 +694,8 @@ class CameraProtocol(object):
     def unpackDataObjectHeader(self, response:bytes)->DataObjects.DataObjHeader:
         dstr = '<2HL'
         try:
-            return DataObjects.DataObjHeader._make(struct.unpack(dstr, response))
+            #return DataObjects.DataObjHeader._make(struct.unpack(dstr, response))
+            return struct.unpack(dstr, response)
         except Exception as e:
             print(e)
             return None
@@ -762,12 +791,19 @@ class CameraProtocol(object):
         try:
             dstr = '<Q3H'
             dssize = struct.calcsize(dstr)
-            vid = DataObjects.MDThermalVideoData._make(struct.unpack(dstr, data.read(dssize)))
-            datasize = vid.VResolution * vid.HResolution
+            #hdr = DataObjects.MDThermalVideoData._make(struct.unpack(dstr, data.read(dssize)))
+            hdr = struct.unpack(dstr, data.read(dssize))
+            datasize = hdr[2] * hdr[1]
             data.seek(640 + dssize) #skipping header TODO: Get Header info from CAE
             vidframe:np.array = np.array(
-                         struct.unpack('<' + str(datasize) +'H', data.read(-1)), dtype=np.uint16).reshape(vid.VResolution, vid.HResolution)
-            return (vid, vidframe)
+                         struct.unpack('<' + str(datasize) +'H', data.read(-1)), dtype=np.uint16).reshape(hdr[2], hdr[1])
+            if(hdr[3] == DataObjects.ThermalDatatype.TelemetryEnabledTLinearEnabledRaw14Res0_1K.value):
+                vidframe = (vidframe/ 10.0)
+                vidframe -= 273.15
+            elif(hdr[3] == DataObjects.ThermalDatatype.TelemetryEnabledTLinearEnabledRaw14Res0_01K.value):
+                vidframe = (vidframe/ 100.0)
+                vidframe -= 273.15
+            return (hdr, vidframe)
         except Exception as ex:
             print(ex)
             return (None, None)
@@ -857,7 +893,7 @@ class CameraProtocol(object):
         Framerate acoustics - sAFr
         Acoustic Averaging - sAAvg
     '''
-    def InitialConfig(self, invokeId, distance:int, freqRange:tuple, resolution:tuple, 
+    def ConfigureCamera(self, invokeId, distance:int, freqRange:tuple, resolution:tuple, 
                         acousticsRate:int, acousticAvg:int)->bytes:
         dataLs=[DataObjects.DataObjPk._make((DataObjects.Ids.Distance, '<2HL')), 
                 DataObjects.DataObjPk._make((DataObjects.Ids.FrequencyRange, '<2H2L')),
@@ -928,4 +964,97 @@ class CameraProtocol(object):
         else:
             return struct.pack('<BBHL', CommandCodes.StopProcedureReq.value, invokeId, 0, 0)
 
+
+class CameraProtocolProxy(BaseProxy):
+    _exposed_ = ('unpackDecodeResponse', 'getDeviceStatus', 'setStreamFlags', \
+                 'unsetStreamFlags', 'unpackDataMessage', 'unpackDataObjectHeader', \
+                 'unpackDecodeVideoData', 'unpackDecodeAcousticVideoData', \
+                 'unpackDecodeSpectrumData', 'unpackDecodeAudioData', \
+                 'unpackDecodeThermalVideoData', 'writeDistance', 'writeFrequencyRange', \
+                 'writeCameraLighting', 'generateReadRequest', 'ConfigureCamera', \
+                 'dataToSendConfig', 'setState', 'startStopProcedure', \
+                 'getDeviceState', 'p_getPatterns', 'p_isConfigured', 'p_hasInitialStatus', \
+                 'isStreaming')
     
+    #-------------------------------------------parameter accessors
+    def p_isConfigured(self):
+        return self._callmethod('p_isConfigured')
+    
+    def p_hasInitialStatus(self):
+        return self._callmethod('p_hasInitialStatus')
+    
+    def p_getPatterns(self):
+        return self._callmethod('p_getPatterns')
+    
+    #-----------------------------------------------operation methods
+    def unpackDecodeResponse(self, response:bytes):
+        return self._callmethod('unpackDecodeResponse', (response,))
+    
+    def getDeviceStatus(self):
+        return self._callmethod('getDeviceStatus')
+    
+    def setStreamFlags(self):
+        return self._callmethod('setStreamFlags')
+    
+    def unsetStreamFlags(self):
+        return self._callmethod('unsetStreamFlags')
+
+    def unpackDataMessage(self, response:bytes):
+        return self._callmethod('unpackDataMessage', (response,))
+    
+    def unpackDataObjectHeader(self, response:bytes):
+        return self._callmethod('unpackDataObjectHeader', (response,))
+    
+    def unpackDecodeVideoData(self, data:io.BytesIO):
+        return self._callmethod('unpackDecodeVideoData', (data,))
+    
+    def unpackDecodeAcousticVideoData(self, data:io.BytesIO):
+        return self._callmethod('unpackDecodeAcousticVideoData', (data,))
+    
+    def unpackDecodeSpectrumData(self, data:io.BytesIO):
+        return self._callmethod('unpackDecodeSpectrumData', (data,))
+    
+    def unpackDecodeAudioData(self, data:io.BytesIO):
+        return self._callmethod('unpackDecodeAudioData', (data,))
+    
+    def unpackDecodeThermalVideoData(self, data:io.BytesIO):
+        return self._callmethod('unpackDecodeThermalVideoData', (data,))
+    
+    def writeDistance(self, invokeId, distance:int):
+        return self._callmethod('writeDistance', (invokeId, distance,))
+    
+    def writeFrequencyRange(self, invokeId, freqRange:tuple):
+        return self._callmethod('writeFrequencyRange', (invokeId, freqRange,))
+    
+    def writeCameraLighting(self, invokeId: int, val:int):
+        return self._callmethod('writeCameraLighting', (invokeId, val,))
+    
+    def generateReadRequest(self, command:CommandCodes, invokeId, dataLs:object=None):
+        return self._callmethod('generateReadRequest', (command, invokeId, dataLs,))
+    
+    def ConfigureCamera(self, invokeId, distance:int, freqRange:tuple, resolution:tuple, 
+                        acousticsRate:int, acousticAvg:int):
+        return self._callmethod('ConfigureCamera', (invokeId, distance, freqRange, 
+                                            resolution, acousticsRate, acousticAvg,))
+    
+    def dataToSendConfig(self, invokeId, dataToSend1:int = 0, dataToSend2:int = 0):
+        return self._callmethod('dataToSendConfig', (invokeId, dataToSend1, dataToSend2,))
+    
+    def setState(self, invokeId:int, 
+                 state:Device.DeviceStates= Device.DeviceStates.Unknown):
+        return self._callmethod('setState', (invokeId, state,))
+    
+    def startStopProcedure(self, invokeId:int, startProc:bool = True):
+        return self._callmethod('startStopProcedure', (invokeId, startProc,))
+    
+    def getDeviceState(self):
+        return self._callmethod('getDeviceState')
+    
+    def isStreaming(self):
+        return self._callmethod('isStreaming')
+    
+
+class CameraProtocolManager(BaseManager):
+    pass
+
+CameraProtocolManager.register('CameraProtocol', CameraProtocol, CameraProtocolProxy)

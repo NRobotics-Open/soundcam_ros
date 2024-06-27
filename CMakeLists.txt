@@ -8,6 +8,11 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   message_generation
+  actionlib_msgs
+  audio_common_msgs
+  jsk_recognition_msgs
+  diagnostic_msgs
+  geometry_msgs
 )
 
 
@@ -15,6 +20,7 @@ find_package(catkin REQUIRED COMPONENTS
 add_message_files(
    FILES
    SoundcamStatus.msg
+   SoundcamDetection.msg
    Preset.msg
  )
 
@@ -26,16 +32,18 @@ add_service_files(
  )
 
 ## Generate actions in the 'action' folder
-# add_action_files(
-#   FILES
-#   Action1.action
+add_action_files(
+   FILES
+   Soundcam.action
 #   Action2.action
-# )
+ )
 
 ## Generate added messages and services with any dependencies listed here
 generate_messages(
   DEPENDENCIES
   std_msgs
+  actionlib_msgs
+  diagnostic_msgs
 )
 
 ################################################
@@ -70,7 +78,7 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES soundcam_ros
-  CATKIN_DEPENDS rospy std_msgs message_runtime
+  CATKIN_DEPENDS rospy std_msgs actionlib_msgs diagnostic_msgs message_runtime
   # DEPENDS system_lib
 )
 
@@ -156,6 +164,7 @@ install(DIRECTORY
   config
   msg
   srv
+  action
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 

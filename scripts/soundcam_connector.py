@@ -7,7 +7,7 @@ from CAE Sofware & Systems GmbH.
 Developer: ephson@nrobotics.com
 '''
 
-import socket, time, atexit, os, io, sys
+import socket, time, atexit, os, io, sys, signal, subprocess
 from threading import Thread
 from enum import Enum
 from bitarray import bitarray
@@ -19,17 +19,15 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
-from soundcam_protocol import CommandCodes, DataMessages, Device, DataObjects, \
-    CameraProtocol
+from soundcam_protocol import CommandCodes, DataMessages, MDDataMessage, Device, \
+    DataObjects, \
+    CameraProtocol as CP, CameraProtocolProxy as CPP, CameraProtocolManager
 import multiprocessing
 from multiprocessing import Process, Queue, Semaphore
-from multiprocessing import shared_memory
 import SharedArray as sa
 
-from soundcam_ros import SoundcamROS
-from utils import SoundUtils as SU
-
-import acoustics.decibel as bel
+from utils import SoundUtils as SU, SoundUtilsProxy as SUP, SoundUtilsManager, \
+    EuclideanDistTracker
 
 #http stream
 #from soundcam_streamer import StreamingServer, StreamingOutput, StreamingHandler
@@ -53,6 +51,7 @@ class SoundCamConnector(object):
         O_SPEC = 9
         O_AUD = 10
         O_THM = 11
+        O_BW = 12
     
     class OverlayTypes(Enum):
         ACOUSTIC = 0
@@ -67,12 +66,21 @@ class SoundCamConnector(object):
         self.debug = debug
         self.testing = False
         self.invokeId = 1
-
-        #external classes
         self.cfgObj = cfgObj
+        self.connected = False
+
+        #debug parameters
+        self.new_frame_t = 0
+        self.prev_frame_t = 0
+
+        #prepare utils manager
+        manager = SoundUtilsManager()
+        manager.start()
+        self.scamUtils = manager.SoundUtils()
+        self.objTracker = EuclideanDistTracker()
+        
         self.shmnames=['npaudiomem', 'npglobalspecmem', 'nplocalspecmem', 'npacmem', 'npenergymem']
-        self.semaphores = [Semaphore() for s in range(len(self.shmnames))]
-        self.scamUtils = SU()
+
         self.scamUtils.setScalingMode(SU.ScalingMode(self.cfgObj['scalingMode']), 
                                       dynamic=self.cfgObj['dynamic'], 
                                       max=self.cfgObj['maximum'],
@@ -82,23 +90,23 @@ class SoundCamConnector(object):
                 sa.delete(shm) #audio buffer
             except:
                 pass
-        self.audioBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.AUDIO.value], (self.scamUtils.audlength, 1))
-        self.globalSpecBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.GLOBAL_SPECTRUM.value], (self.scamUtils.window, 1023))
-        self.localSpecBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.LOCAL_SPECTRUM.value], (self.scamUtils.window, 1023))
-        self.energyBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.ENERGY.value], (self.scamUtils.acslength, 1))
-        self.acousticBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.ACOUSTIC.value], (self.scamUtils.acslength, 1))
-        self.scamUtils.initializeSharedBuffers(semls=self.semaphores, shmnamesls=self.shmnames)
+        self.audioBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.AUDIO.value], (self.scamUtils.p_getAudLen(), 1))
+        self.globalSpecBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.GLOBAL_SPECTRUM.value], (self.scamUtils.p_getWindow(), 1023))
+        self.localSpecBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.LOCAL_SPECTRUM.value], (self.scamUtils.p_getWindow(), 1023))
+        self.energyBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.ENERGY.value], (self.scamUtils.p_getACLen(), 1))
+        self.acousticBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.ACOUSTIC.value], (self.scamUtils.p_getACLen(), 1))
+        self.scamUtils.initializeSharedBuffers(shmnamesls=self.shmnames)
 
         #check SoundCam Connectivity and Initialize connection
-        if(not self.pingCamera(deviceIP=self.cfgObj['ip'])):
-            exit(-99)
+        # if(not self.pingCamera(deviceIP=self.cfgObj['ip'])):
+        #     exit(-99)
 
         self.bufSize = 1460
         self.recvStream = False
         self.processData = multiprocessing.Event()
         self.processData.set()
         self.visualUp = False
-        self.isConnected = False
+        self.connected = False
 
         #prepare queues
         self.processes = list()
@@ -107,39 +115,55 @@ class SoundCamConnector(object):
 
         #post-processing setup
         self.overlayBA = bitarray(self.cfgObj['overlayConfig'])
+        self.qDict[SoundCamConnector.DTypes.O_BW.name] = Queue(maxsize=3)
+        self.qDict[SoundCamConnector.DTypes.O_VID.name] = Queue(maxsize=3)
         self.qDict[SoundCamConnector.DTypes.O_ACVID.name] = Queue(maxsize=3)
         self.qDict[SoundCamConnector.DTypes.O_SPEC.name] = Queue(maxsize=3)
         self.qDict[SoundCamConnector.DTypes.O_AUD.name] = Queue(maxsize=3)
         self.qDict[SoundCamConnector.DTypes.O_THM.name] = Queue(maxsize=3)
             
-            #self.processes.append(Process(target=self.postProc))
-        if(self.cfgObj['visualizeOverlay']):
-            self.cfgObj['visualizeVideo'] = True
+        #self.processes.append(Process(target=self.postProc))
+        if(not self.cfgObj['system_run']): #prevent any form of visualization if not system_run
+            #self.cfgObj['visualizeOverlay'] = False
+            self.cfgObj['visualizeVideo'] = False
+            self.cfgObj['visualizeThermal'] = False
+            self.cfgObj['visualizeAudio'] = False
+            self.cfgObj['visualizeAcVideo'] = False
+            self.cfgObj['visualizeSpectrum'] = False
+
+        # if(self.cfgObj['visualizeOverlay']):
+        #     self.cfgObj['visualizeVideo'] = True
         
-        if(self.cfgObj['publishVideo']):
+        if(self.cfgObj['processVideo']):
             self.vidQ = Queue()
             self.qDict[SoundCamConnector.DTypes.VID.name] = self.vidQ
-            #self.threads.append(Thread(target=self.publishVideo, args=(self.vidQ, self.processData), daemon=True))
-            self.processes.append(Process(target=self.publishVideo, args=(self.vidQ, self.processData)))
-        if(self.cfgObj['publishAcVideo']):
+            #self.threads.append(Thread(target=self.processVideo, args=(self.vidQ, self.processData), daemon=True))
+            self.processes.append(Process(target=self.processVideo, args=(self.vidQ, self.processData), name='vidProc'))
+        if(self.cfgObj['processAcVideo']):
             self.acVidQ = Queue()
             self.qDict[SoundCamConnector.DTypes.ACOUSTIC_VID.name] = self.acVidQ
-            self.processes.append(Process(target=self.publishAcousticVideo, 
-                                          args=(self.acVidQ, self.processData, self.scamUtils)))
-        if(self.cfgObj['publishSpectrum']):
+            self.ac_semaphore = Semaphore(1)
+            self.processes.append(Process(target=self.processAcVideo, 
+                                          args=(self.acVidQ, self.processData, 
+                                                self.scamUtils, self.ac_semaphore)))
+        if(self.cfgObj['processSpectrum']):
             self.specQ = Queue()
             self.qDict[SoundCamConnector.DTypes.SPECTRUM.name] = self.specQ
-            self.processes.append(Process(target=self.publishSpectrum, 
-                                          args=(self.specQ, self.processData, self.scamUtils)))
-        if(self.cfgObj['publishAudio']):
+            self.spec_semaphore = Semaphore(1)
+            self.processes.append(Process(target=self.processSpectrum, 
+                                          args=(self.specQ, self.processData, 
+                                                self.scamUtils, self.spec_semaphore)))
+        if(self.cfgObj['processAudio']):
             self.audQ = Queue()
             self.qDict[SoundCamConnector.DTypes.AUDIO.name] = self.audQ
-            self.processes.append(Process(target=self.publishAudio, 
-                                          args=(self.audQ, self.processData, self.scamUtils)))
-        if(self.cfgObj['publishThermal']):
+            self.aud_semaphore = Semaphore(1)
+            self.processes.append(Process(target=self.processAudio, 
+                                          args=(self.audQ, self.processData, 
+                                                self.scamUtils, self.aud_semaphore)))
+        if(self.cfgObj['processThermal']):
             self.thermalQ = Queue()
             self.qDict[SoundCamConnector.DTypes.THERMAL.name] = self.thermalQ
-            self.processes.append(Process(target=self.publishThermalVideo, 
+            self.processes.append(Process(target=self.processThermalVideo, 
                                           args=(self.thermalQ, self.processData)))
         # if(self.cfgObj.p_pubRaw):
         #     self.rawQ = Queue()
@@ -149,8 +173,10 @@ class SoundCamConnector(object):
         if(self.cfgObj['visualizeAudio'] or self.cfgObj['visualizeSpectrum']):
             self.processes.append(Process(target=self.displayProcess, args=(self.processData,)))
 
-        #camera protocol instance
-        self.protocol = CameraProtocol(protocol=self.cfgObj['protocol'], debug=self.debug) #holds & processes received data from device
+        #prepare protocol manager
+        protocmanager = CameraProtocolManager()
+        protocmanager.start()
+        self.protocol = protocmanager.CameraProtocol(protocol=self.cfgObj['protocol'], debug=self.debug) #holds & processes received data from device
 
         #start processes
         print('Starting processes ...')
@@ -172,18 +198,19 @@ class SoundCamConnector(object):
     '''Ping Camera'''
     def pingCamera(self, deviceIP):
         #check SoundCam Connectivity and Initialize connection
-        result = False
-        start_t = time.time()
-        while(True):
-            res = os.system("ping -c 1 " + deviceIP)
-            if(res == 0):
-                result = True
-                break
-            if((time.time() - start_t) > CONNECT_TIMEOUT):
-                print('Camera not connected. Check network configuration!')
-                break
-            time.sleep(0.5)
-        return result
+        #start_t = time.time()
+        # while(True):
+        #res = os.system("ping -c 1 " + deviceIP)
+        proc = subprocess.Popen(["ping", deviceIP, "-c", "1", "-W", "2"], 
+                                stdout=subprocess.PIPE)
+        proc.wait()
+        if(proc.poll() == 0):
+            return True
+            # if((time.time() - start_t) > CONNECT_TIMEOUT):
+            #     print('Camera not connected. Check network configuration!')
+            #     break
+            # time.sleep(0.5)
+        return False
 
     '''
         Establishes connection with the camera and performs handshake (gets device Id)
@@ -198,12 +225,12 @@ class SoundCamConnector(object):
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) 
         try:
             self.sock.connect((ip_addr, port))
-            self.isConnected = True
+            self.connected = True
         except Exception as ex:
             print('Failure Establishing connection to device! ', ex)
-            self.isConnected = False
+            self.connected = False
             exit(-1)
-        print("\n Socket initialized on: \t IP| %s PORT| %d" % (ip_addr, port))
+        print("\nSocket initialized on: \t IP| %s PORT| %d" % (ip_addr, port))
         #Request device Identification
         query = self.protocol.generateReadRequest(command=CommandCodes.IdentificationReq, 
                                                   invokeId=self.invokeId)
@@ -211,53 +238,63 @@ class SoundCamConnector(object):
         query += self.protocol.writeCameraLighting(self.invokeId, 
                                                    self.cfgObj['cameraLighting'])
         self.sendData(query=query)
-        return self.isConnected
+        return self.connected
+    
+    ''' REGEX pattern matcher '''
+    def getMatch(self, buf):
+        match = None
+        for ptn in self.protocol.p_getPatterns():
+            res = ptn.search(buf)
+            if(match is None):
+                match = res
+            elif(res and (res.span()[0] < match.span()[0])):
+                match = res
+        return match
 
     '''Sends command to reset the camera'''
     def restartCamera(self):
         query = self.protocol.generateReadRequest(command=CommandCodes.ResetReq, 
                                                   invokeId=self.invokeId)
         self.sendData(query=query)
-        
-    '''Starts the cyclic reception of stream'''
-    def startStream(self):
-        print('Stream started/resumed ...')
-        self.recvStream = True
-        self._startMeasurement()
-
-    
-    '''Stops the cyclic reception of stream'''
-    def _stopStream(self):
-        query = self.protocol.setState(invokeId=self.invokeId)
-        self.sendData(query=query)
-        print('Sent FinishRequest ...')
-        self.recvStream = False 
+        return True
 
     def disconnect(self):
-        if(self.isConnected):
+        self.processData.clear()
+        if(self.connected):
             try:
+                #print('Stopping measurement ...')
+                cv2.destroyAllWindows()
                 plt.close()
                 #self.stopStream()
-                self._stopMeasurement()
+                self.stopMeasurement()
                 self.sock.close()
+                #print('done!')
             except Exception as ex:
                 print('Error closing connection: ', ex)
         try:
+            print('Joining threads/processes ...')
             for th in self.threads:
                 th.join()
-            #self.processData = False
-            for proc in self.processes:
-                proc.join()
+            for p in self.processes:
+                if(p.is_alive()):
+                    #print(f'Terminating {p.name}')
+                    p.terminate()
+                    p.join(timeout=1)  # Wait up to 1 second for process to terminate
+                    if(p.is_alive()):
+                        #print(f'Force killing {p.name}')
+                        os.kill(p.pid, signal.SIGKILL)
+                        p.join()
+            print('done!')
         except Exception as ex:
-            pass
+            print('Error joining processes: ', ex)
     
     ''' Release shared memory blocks '''
     def release_shared(self):
         for i, shm in enumerate(self.shmnames):
-            self.semaphores[i].acquire()
+            #self.semaphores[i].acquire()
             sa.delete(shm)
-            self.semaphores[i].release()
-        del self.semaphores
+            #self.semaphores[i].release()
+        #del self.semaphores
 
     '''Send data over Network'''
     def sendData(self, query:bytes):
@@ -287,10 +324,10 @@ class SoundCamConnector(object):
             - Sets the device state
             - Sets the data to be sent from the device
     '''
-    def configure(self, getQuery=False)->bool:
+    def initialConfigure(self, getQuery=False)->bool:
         try:
             #Configure with WriteObjectReq request --- multiple
-            query = self.protocol.InitialConfig(self.invokeId, 
+            query = self.protocol.ConfigureCamera(self.invokeId, 
                             self.cfgObj['distance'], 
                             (self.cfgObj['minFrequency'], self.cfgObj['maxFrequency']), 
                             (self.cfgObj['camera_W'], self.cfgObj['camera_H']),
@@ -308,13 +345,45 @@ class SoundCamConnector(object):
             if(getQuery):
                 return query
             self.sendData(query=query)
-            #self._startMeasurement()
         except Exception as ex:
             print('Error Configuring device!', ex)
             return False
         return True
     
-    def _startMeasurement(self)->bool:
+    '''
+        Configures the camera:
+            - Sets: 
+                distance 
+                min & max frequency
+                camera resolutions (Width x Height)
+                acoustic Image FPS
+                acoustic Averaging
+            - Updates the acoustic filter
+    '''
+    def updatePreset(self, mode, distance, minFreq, maxFreq,
+                     dynamic=3.1, crest=5.0, maximum=None):
+        try:
+            #Configure with WriteObjectReq request --- multiple
+            query = self.protocol.ConfigureCamera(self.invokeId, 
+                            distance, (minFreq, maxFreq), 
+                            (self.cfgObj['camera_W'], self.cfgObj['camera_H']),
+                            self.cfgObj['acimageFPS'], 
+                            self.cfgObj['acAvg'])
+            #concatenate PrepareState
+            self.invokeId += 1
+            query += self.protocol.setState(self.invokeId, 
+                                            Device.DeviceStates(self.cfgObj['deviceState']))#set device state
+            self.sendData(query=query)
+
+            #configure acoustic filter
+            self.scamUtils.setScalingMode(mode=mode, dynamic=dynamic, 
+                                          max=maximum, crest=crest)
+        except Exception as ex:
+            print('Error Configuring device!', ex)
+            return False
+        return True
+    
+    def startMeasurement(self)->bool:
         try:
             """ query = self.protocol.setState(self.invokeId, Device.DeviceStates.Streaming)#set streaming state
             self.sendData(query=query)
@@ -331,7 +400,7 @@ class SoundCamConnector(object):
         self.protocol.setStreamFlags()
         return True
     
-    def _stopMeasurement(self)->bool:
+    def stopMeasurement(self)->bool:
         try:
             print('Stopping measurement ...')
             query = self.protocol.startStopProcedure(self.invokeId, False) #stop procedure
@@ -339,12 +408,14 @@ class SoundCamConnector(object):
             query += self.protocol.setState(self.invokeId, Device.DeviceStates.Idle) #set Idle state
             self.sendData(query=query)
             self.protocol.unsetStreamFlags()
-            self.processData.clear()
             self.recvStream = False
         except Exception as ex:
-            print('Error Stopping Measurement')
+            print('Error Stopping Measurement: ', ex)
             return False
         return True
+    
+    def isMeasuring(self):
+        return self.protocol.isStreaming()
     
     '''Packs the continuous incoming stream to the generic Queue'''
     def receiveCyclic(self):
@@ -353,46 +424,27 @@ class SoundCamConnector(object):
         # heartrate = 1/ self.cfgObj['heartbeatRate']
         # heart_t = time.time()
         commonstatus_t = time.time()
-        #canPrintLen = True
         while(self.processData.is_set()):
-            if(self.isConnected):
-                #print('Receiving ...')
+            if(self.connected):
                 res = self.sock.recv(self.bufSize)
                 if(res):
                     if(self.recvStream):
-                        # sz = len(res)
-                        # if(canPrintLen and (sz == 1460)):
-                        #     print(res[:36])
-                        #     canPrintLen = False
-                        # if((sz < 1460) and not canPrintLen):
-                        #     canPrintLen = True
-                        #print('Incoming with length: ', len(res))
                         self.globalQ.put(res)
                     else: #if not streaming
                         try:
-                            """ if((self.protocol.DeviceState == 
-                                Device.DeviceStates(self.cfgObj['deviceState'])) and 
-                                (self.protocol.SubState == Device.SubStates.Preparing)):
-                                #self.recvStream = True #ready for continuous stream
-                                #print('Starting measurement')
-                                #self._startMeasurement()
-                                print('Preparing detected!')
-                                time.sleep(10.0) """
                             self.protocol.unpackDecodeResponse(response=res)
                         except Exception as ex:
                             print('\nError Unpacking and Decoding ...')
-                            # print(ex)
-                            # print('Length: ', len(res), ' ', res)
 
                 now = time.time()
-                if((not self.recvStream) and self.protocol.isConfigured): #query for common status when not receiving stream
+                if((not self.recvStream) and self.protocol.p_isConfigured()): #query for common status when not receiving stream
                     if((now - commonstatus_t) >= 0.5):
                         query = self.protocol.generateReadRequest(command=CommandCodes.ReadDataObjectReq, invokeId=self.invokeId, dataLs=[DataObjects.Ids.CommonStatus])
                         self.sendData(query)
                         commonstatus_t = now
                 
-                if((now - start_t) >= 3 and self.isConnected):
-                    print('Cyclic idling ...')
+                if((now - start_t) >= 10.0 and self.connected and self.debug):
+                    print('Cyclic loop running ...')
                     start_t = time.time()
 
                 """ if((now - heart_t) >= heartrate):
@@ -400,11 +452,11 @@ class SoundCamConnector(object):
                     heart_t = now """
                 #time.sleep(0.0001)
             else:
-                print('Awaiting socket connnection ...')
+                #print('Awaiting socket connnection ...')
                 time.sleep(0.1)
         
     '''Filters the generic Deque to the corresponding Deques based on the type'''
-    def streamFilter(self, qDict:dict, canRun:multiprocessing.Event, protocol:CameraProtocol):
+    def streamFilter(self, qDict:dict, canRun:multiprocessing.Event, protocol:CP):
         print('Starting stream filter ...')
         canPopfromQ:bool = True
         contRead:bool = False
@@ -440,15 +492,15 @@ class SoundCamConnector(object):
 
             
         
-        dmsg:DataMessages.MDDataMessage = None
+        dmsg:MDDataMessage = None
         isHdrPkt = False
         canPrintLen = True
         # cnt = 0
         while(canRun.is_set()):
             #read queue and filter
             if(not globalQ.empty()):
-                if(globalQ.qsize() > 50):
-                    print('Global Queue Size: ', globalQ.qsize())
+                # if(globalQ.qsize() > 50):
+                #     print('Global Queue Size: ', globalQ.qsize())
                 
                 if(canPopfromQ):
                     #print('Popping from Queue ...')
@@ -530,7 +582,7 @@ class SoundCamConnector(object):
                             #print('More data required. RemainingLength: ', remainingLen)
                             continue #go back to start
                 else:
-                    print('previous Queue processing ...')
+                    #print('previous Queue processing ...')
                     #reset buffers
                     inObj = data.read(-1)
                     data = io.BytesIO(inObj)
@@ -545,7 +597,7 @@ class SoundCamConnector(object):
                         dmsg = protocol.unpackDataMessage(hdr)
                         #print(dmsg)
                     else:
-                        print('msg failure! -> empty buffer')
+                        #print('msg failure! -> empty buffer')
                         canPopfromQ = True
                         continue
 
@@ -563,7 +615,8 @@ class SoundCamConnector(object):
                         # continue
                         for i in range(dmsg.ObjectCount):
                             dt = data.read(8)
-                            dobj:DataObjects.DataObjHeader = protocol.unpackDataObjectHeader(dt)
+                            dobj:DataObjects.DataObjHeader = DataObjects.DataObjHeader._make(
+                                protocol.unpackDataObjectHeader(dt))
                             if(dobj is None):
                                 print('object header returned None!')
                                 time.sleep(3.0)
@@ -684,10 +737,10 @@ class SoundCamConnector(object):
                         # print('Previous data (== 1460): \n', store2)
                         # store2 = b''
                         #print(inObj[:128])
-                        res = self.protocol.getMatch(inObj)
+                        res = self.getMatch(inObj)
                         if(res):
                             idx = res.span()[0] - 12
-                            print(res, ' Hdr at: ', idx)
+                            #print(res, ' Hdr at: ', idx)
                             data = io.BytesIO(inObj[idx: ])
                             canPopfromQ = False
                         else:
@@ -695,212 +748,142 @@ class SoundCamConnector(object):
                          
 
     '''Decodes and Publishes Video data'''
-    def publishVideo(self, q:Queue, canRun:multiprocessing.Event):
-        print('Starting video decoder and publisher ...')
-        saveVideo = False
-        new_frame_t = 0
-        prev_frame_t = 0
+    def processVideo(self, q:Queue, canRun:multiprocessing.Event):
+        print('Starting video processor ...')
 
-        acQ: Queue = None
-        spcQ: Queue = None
-        audQ: Queue = None
-        thmQ: Queue = None
+        bwvdQ:Queue = self.qDict[SoundCamConnector.DTypes.O_BW.name]
+        ovdQ:Queue = self.qDict[SoundCamConnector.DTypes.O_VID.name]
+        acQ:Queue = None
+        # spcQ: Queue = None
+        # audQ: Queue = None
+        # thmQ: Queue = None
 
         if(self.overlayBA[SoundCamConnector.OverlayTypes.ACOUSTIC.value]):
             acQ = self.qDict[SoundCamConnector.DTypes.O_ACVID.name]
-        if(self.overlayBA[SoundCamConnector.OverlayTypes.SPECTRUM.value]):
-            spcQ = self.qDict[SoundCamConnector.DTypes.O_SPEC.name]
-        if(self.overlayBA[SoundCamConnector.OverlayTypes.AUDIO.value]):
-            audQ = self.qDict[SoundCamConnector.DTypes.O_AUD.name]
-        if(self.overlayBA[SoundCamConnector.OverlayTypes.THERMAL.value]):
-            thmQ = self.qDict[SoundCamConnector.DTypes.O_THM.name]
+        # if(self.overlayBA[SoundCamConnector.OverlayTypes.SPECTRUM.value]):
+        #     spcQ = self.qDict[SoundCamConnector.DTypes.O_SPEC.name]
+        # if(self.overlayBA[SoundCamConnector.OverlayTypes.AUDIO.value]):
+        #     audQ = self.qDict[SoundCamConnector.DTypes.O_AUD.name]
+        # if(self.overlayBA[SoundCamConnector.OverlayTypes.THERMAL.value]):
+        #     thmQ = self.qDict[SoundCamConnector.DTypes.O_THM.name]
 
-        vidOut = None
-        dBCutoff = 35
-        if(saveVideo):
-            vidOut = cv2.VideoWriter('soundcam.mp4', cv2.VideoWriter_fourcc(*'AVC1'), 17, 
-                                     (self.cfgObj['camera_H'], self.cfgObj['camera_W']))
-            #vidOut = cv2.VideoWriter('soundcam.avi', cv2.VideoWriter_fourcc(*'MJPG'), 10, (240, 320))
-        def visualizeVideo(frame):
-            nonlocal new_frame_t, prev_frame_t, vidOut
-            if(not saveVideo):
-                color_img = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGRA)
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                new_frame_t = time.time()
-                fps = 1/(new_frame_t - prev_frame_t)
-                prev_frame_t = new_frame_t
-                fps =  int(fps)
-                cv2.putText(color_img, str(fps), (7, 70), font, 2, (100, 255, 0), 3, cv2.LINE_AA)
-                if(self.cfgObj['visualizeOverlay']):
-                    if(acQ and not acQ.empty()): #TODO: WORK on this
-                        # overlay acoustic on video image
-                        frame = acQ.get()
-                        frame = frame[1]
-                        #print(frame)
-                        truth_tbl = frame[...] < dBCutoff
-                        frame[np.where(frame[...] < dBCutoff)] = 0
-                        frame = np.interp(frame, 
-                                        (self.cfgObj['minimum_db'], self.cfgObj['maximum_db']), 
-                                        (0, 255))
-                        frame = frame.astype('uint8')
-                        mimg = np.zeros((48, 64, 3), dtype=np.uint8)
-                        cv2.applyColorMap(frame, cv2.COLORMAP_JET, mimg)
-                        mimga = cv2.cvtColor(mimg, cv2.COLOR_RGB2RGBA)
-                        mimga[truth_tbl, 3] = 0
-                        rimg_up = cv2.resize(mimga, 
-                                            (self.cfgObj['camera_W'], self.cfgObj['camera_H']), 
-                                            interpolation= cv2.INTER_AREA)
-                        
-                        # store the alpha channels only
-                        m1 = color_img[:,:,3]
-                        m2 = rimg_up[:,:,3]
 
-                        # invert the alpha channel and obtain 3-channel mask of float data type
-                        m1i = cv2.bitwise_not(m1)
-                        alpha1i = cv2.cvtColor(m1i, cv2.COLOR_GRAY2BGRA)/255.0
-
-                        m2i = cv2.bitwise_not(m2)
-                        alpha2i = cv2.cvtColor(m2i, cv2.COLOR_GRAY2BGRA)/255.0
-
-                        # Perform blending and limit pixel values to 0-255 (convert to 8-bit)
-                        b1i = cv2.convertScaleAbs(rimg_up*(1-alpha2i) + color_img*alpha2i)
-                        cv2.imshow('Video - Overlay', b1i)
-                else:
-                    cv2.imshow('Video Data', color_img)
-                if cv2.waitKey(1) == ord('q'):
-                    exit(-99)
-            else:
-                vidOut.write(frame)
-
+        # vidOut = cv2.VideoWriter('soundcam.mp4', cv2.VideoWriter_fourcc(*'AVC1'), 17, 
+        #                             (self.cfgObj['camera_H'], self.cfgObj['camera_W']))
+        #vidOut = cv2.VideoWriter('soundcam.avi', cv2.VideoWriter_fourcc(*'MJPG'), 10, (240, 320))
         start_t = time.time()
         hits = 0
+        acFrame = None
         while(canRun.is_set()):
             if(not q.empty()):
                 #print('Video Q size: ', q.qsize())
                 decoded = self.protocol.unpackDecodeVideoData(q.get())
                 if(self.cfgObj['visualizeVideo']):
-                    visualizeVideo(decoded[1])
+                    if(self.cfgObj['visualizeOverlay'] and not acQ.empty()):
+                        acFrame = acQ.get()
+                    self.visualizeBWVideo(decoded[1], acFrame=acFrame)
+                else:
+                    if(not acQ.empty()):
+                        acFrame = acQ.get()
+
+                    ovid = self.visualizeBWVideo(decoded[1], acFrame=acFrame, getResult=True)
+                    if(not ovdQ.full()): #push data to Q
+                        ovdQ.put(ovid)
+                    else:
+                        try:
+                            ovdQ.get_nowait() # remove data
+                        except Exception as ex:
+                            pass
+                        ovdQ.put(ovid)
+                    
+                    if(not bwvdQ.full()): #push data to Q
+                        bwvdQ.put(decoded[1])
+                    else:
+                        try:
+                            bwvdQ.get_nowait() # remove data
+                        except Exception as ex:
+                            pass
+                        bwvdQ.put(decoded[1])
                 
                 hits += 1
-                if(time.time() - start_t >= 1.0):
+                if((time.time() - start_t >= 1.0) and self.debug):
                     print('==================================================================Vid @ %i Hz' % hits)
                     hits = 0
                     start_t = time.time()
-        
-        if(saveVideo):
-            vidOut.release()
-        cv2.destroyAllWindows()
 
     '''Decodes and Publishes Acoustic Video data'''
-    def publishAcousticVideo(self, q:Queue, canRun:multiprocessing.Event, scam:SU):
-        print('Starting acoustic video decoder and publisher ...')
-        new_frame_t = 0
-        prev_frame_t = 0
-        dBCutoff = 33 #42.671717
-        acQ: Queue = None
-        if(self.overlayBA[SoundCamConnector.OverlayTypes.ACOUSTIC.value]):
-            acQ = self.qDict[SoundCamConnector.DTypes.O_ACVID.name]
-        
-        def visualizeVideo(frame):
-            nonlocal new_frame_t, prev_frame_t, dBCutoff
-            mean = bel.dbmean(frame)
-            #frame[np.where(np.all(frame[..])]
-            #truth_tbl = frame[...] == 0.0
-            truth_tbl = np.where(frame[:,:] == 0.0, True, False)
-            #print(f"Truth table: {truth_tbl.shape}")
-            #frame[np.where(frame[...] < dBCutoff)] = 0.0
-            # if(mean < dBCutoff):
-            #     frame = np.zeros((3072,1))
-            #print(frame)
-            #frame -= 20
-            #frame /=100
-            #frame = cv2.normalize(frame, None, 0,255, cv2.NORM_MINMAX, cv2.CV_8UC1)
-            frame *= 255
-            frame = frame.astype('uint8')
-            #print('/n+++++++++++++++++++++++++-----------------------------------')
-            #print(f"Frame: {frame}")
-            # frame = np.interp(frame, 
-            #                   (self.cfgObj['minimum_db'], self.cfgObj['maximum_db']), 
-            #                   (0, 255))
-            #frame = frame.astype('uint8')
-            mimg = np.zeros((48, 64, 3), dtype=np.uint8)
-            cv2.applyColorMap(frame, cv2.COLORMAP_JET, mimg)
-            mimga = cv2.cvtColor(mimg, cv2.COLOR_RGB2RGBA)
-            #print(mimga.shape)
-            mimga[truth_tbl, 3] = 0
-            #print(f"Image frame: {mimga.shape}")
-
-            kernel = np.ones((8,8),np.float32)/64
-            filt_img = cv2.filter2D(mimga,-1,kernel)
-            #filt_img = cv2.GaussianBlur(mimga, (5,5), 0)
-            rimg_up = cv2.resize(mimga, 
-                                 (self.cfgObj['camera_W'], self.cfgObj['camera_H']), 
-                                 interpolation= cv2.INTER_AREA)
-            # font = cv2.FONT_HERSHEY_SIMPLEX
-            # new_frame_t = time.time()
-            # fps = 1/(new_frame_t - prev_frame_t)
-            # prev_frame_t = new_frame_t
-            # fps =  int(fps)
-            #cv2.putText(rimg_up, str(fps), (7, 70), font, 2, (100, 255, 0), 3, cv2.LINE_AA)
-            #dataConn.send(rimg_up) #send image out
-            #print(rimg_up)
-            cv2.namedWindow("Acoustic Video", cv2.WINDOW_AUTOSIZE)
-            #bimg_up = cv2.GaussianBlur(rimg_up, (5,5), 0)
-            cv2.imshow('Acoustic Video', rimg_up)
-            if cv2.waitKey(1) == ord('q'):
-                exit(-99)
-
+    def processAcVideo(self, q:Queue, canRun:multiprocessing.Event, scam:SU, 
+                       semaph:multiprocessing.Semaphore):
+        print('Starting acoustic video processor ...')
+        acQ:Queue = self.qDict[SoundCamConnector.DTypes.O_ACVID.name]
         start_t = time.time()
         hits = 0
         while(canRun.is_set()):
             if(not q.empty()):
                 decoded = self.protocol.unpackDecodeAcousticVideoData(q.get())
-                norm0_1 = scam.updateAcousticBuffer(decoded)
-                if(acQ and not acQ.full()): #push acoustic data to overlay_Q
-                    acQ.put(decoded)
-                else:
-                    try:
-                        acQ.get_nowait() # remove data
-                    except Exception as ex:
-                        pass
-                    if(acQ):
-                        acQ.put(decoded)
-                #print(list(norm0_1))
-                if(self.cfgObj['visualizeAcVideo']):
-                    visualizeVideo(norm0_1)
+                with semaph:
+                    norm0_1 = scam.updateAcousticBuffer(decoded)
+                    if(self.cfgObj['visualizeAcVideo']):
+                        self.visualizeACVideo(norm0_1)
 
-                    #self.scamUtils.printMetrics(decoded[1])
+                    if(not acQ.full()): #push acoustic data to overlay_Q
+                        acQ.put(self.visualizeACVideo(norm0_1, getResult=True))
+                    else:
+                        try:
+                            acQ.get_nowait() # remove data
+                        except Exception as ex:
+                            pass
+                        acQ.put(self.visualizeACVideo(norm0_1, getResult=True))
                 
                 hits += 1
-                if(time.time() - start_t >= 1.0):
+                if((time.time() - start_t >= 1.0) and self.debug):
                     print('===============================================================AcousticVid @ %i Hz' % hits)
                     hits = 0
                     start_t = time.time()
-        if(self.cfgObj['visualizeAcVideo']):
-            cv2.destroyAllWindows()
 
     '''Decodes and Publishes Spectrum data'''
-    def publishSpectrum(self, q:Queue, canRun:multiprocessing.Event, scamObj:SU):
-        print('Starting spectrum decoder and publisher ...')
+    def processSpectrum(self, q:Queue, canRun:multiprocessing.Event, scamObj:SU, 
+                        semaph:multiprocessing.Semaphore):
+        print('Starting spectrum processor ...')
 
         saveSpectrum = False
         specData = []
         t = 30 #seconds
         record_t = time.time()
-
-        spcQ: Queue = None
-        #if(self.overlayBA[SoundCamConnector.OverlayTypes.SPECTRUM.value]):
-        spcQ = self.qDict[SoundCamConnector.DTypes.O_SPEC.name]
-        
+        spcQ: Queue = self.qDict[SoundCamConnector.DTypes.O_SPEC.name]
         hits = 0
         start_t = time.time()
+
+        #detection algorithm
+        detect_start = time.time()
+        has_started = False
         while(canRun.is_set()):
             if(not q.empty()):
                 decoded = self.protocol.unpackDecodeSpectrumData(q.get())
-                scamObj.updateSpectrumBuffer(decoded)
-                # res = self.scamUtils.computeEnergy()
-                # print(f"Mean Energy: {res[0]:.4f}")
-                # print(f"Standard deviation of energy: {res[1]:.4f}")
+                with semaph:
+                    scamObj.updateSpectrumBuffer(decoded)
+                    energy_info = self.scamUtils.computeEnergy(getArray=False)
+                    if(not has_started):
+                        if((energy_info[0] > self.cfgObj['mean_energy_thresh']) and 
+                        (energy_info[1] > self.cfgObj['energy_std_dev'])):
+                            print("Activation!!!")
+                            print(f"Mean Energy: {energy_info[0]:.4f}")
+                            print(f"Standard deviation of energy: {energy_info[1]:.4f}")
+                            detect_start = time.time()
+                            has_started = True
+                    else:
+                        #print('Will update detection: ', self.scamUtils.p_getDetection())
+                        if((time.time() - detect_start >= self.cfgObj['trigger_time'])):
+                            self.scamUtils.updateDetection(True)
+                        if((energy_info[0] < self.cfgObj['mean_energy_thresh']) and 
+                        (energy_info[1] < self.cfgObj['energy_std_dev'])):
+                            print("Deactivation!!!")
+                            print(f"Mean Energy: {energy_info[0]:.4f}")
+                            print(f"Standard deviation of energy: {energy_info[1]:.4f}")
+                            has_started = False
+                            self.scamUtils.updateDetection(False)
+                        
+                    
                 
                 #print('Spectrum:', decoded[0], ' ' ,decoded[1])
                 if(spcQ and not spcQ.full()): #push spectrum data to overlay_Q
@@ -923,14 +906,15 @@ class SoundCamConnector(object):
                         saveSpectrum = False
                 
                 hits += 1
-                if(time.time() - start_t >= 1.0):
+                if((time.time() - start_t >= 1.0) and self.debug):
                     print('===============================================================Spectrum @ %i Hz' % hits)
                     hits = 0
                     start_t = time.time()
 
     '''Decodes and Publishes Audio data'''
-    def publishAudio(self, q:Queue, canRun:multiprocessing.Event, scamObj:SU):
-        print('Starting audio decoder and publisher ...')
+    def processAudio(self, q:Queue, canRun:multiprocessing.Event, scamObj:SU, 
+                     semaph:multiprocessing.Semaphore):
+        print('Starting audio processor ...')
 
         saveAudio = False
         audioData_plus = []
@@ -938,17 +922,14 @@ class SoundCamConnector(object):
         t = 30 #seconds
         record_t = time.time()
 
-        audQ: Queue = None
-        #if(self.overlayBA[SoundCamConnector.OverlayTypes.AUDIO.value] or self.cfgObj['visualizeAudio']):
-        audQ = self.qDict[SoundCamConnector.DTypes.O_AUD.name]
+        audQ:Queue = self.qDict[SoundCamConnector.DTypes.O_AUD.name]
         start_t = time.time()
         hits = 0
-
         while(canRun.is_set()):
             if(not q.empty()):
                 decoded = self.protocol.unpackDecodeAudioData(q.get())
-                scamObj.updateAudioBuffer(decoded) #update ringbuffer
-
+                with semaph:
+                    scamObj.updateAudioBuffer(decoded) #update ringbuffer
                 if(audQ and not audQ.full()): #push audio data to overlay_Q
                     audQ.put(decoded)
                 else:
@@ -969,11 +950,11 @@ class SoundCamConnector(object):
                         #audioData /= np.max(np.abs(audioData),axis=0)
                         #self.scamUtils.writeAudio('outputAudio_single_plus.wav', audioData_plus, sr)
                         #self.scamUtils.writeAudio('outputAudio_single_minus.wav', audioData_minus, sr)
-                        self.scamUtils.writeAudio('outputLong.wav', (audioData_plus + audioData_minus), sr)
+                        scamObj.writeAudio('outputLong.wav', (audioData_plus + audioData_minus), sr)
                         saveAudio = False
                         
                 hits += 1
-                if(time.time() - start_t >= 1.0):
+                if((time.time() - start_t >= 1.0) and self.debug):
                     print('================================================================Audio @ %i Hz' % hits)
                     hits = 0
                     start_t = time.time()
@@ -985,43 +966,32 @@ class SoundCamConnector(object):
             pass
 
     '''Decodes and Publishes Thermal Video data'''
-    def publishThermalVideo(self, q:Queue, canRun:multiprocessing.Event):
-        print('Starting thermal video decoder and publisher ...')
-        new_frame_t = 0
-        prev_frame_t = 0
-
-        def visualizeThermal(frame):
-            nonlocal new_frame_t, prev_frame_t
-            frame = np.interp(frame, 
-                              (-10, 50), (0, 255))
-            frame = frame.astype('uint8')
-            mimg = np.zeros((120, 160, 3), dtype=np.uint8)
-            cv2.applyColorMap(frame, cv2.COLORMAP_INFERNO, mimg)
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            new_frame_t = time.time()
-            fps = 1/(new_frame_t - prev_frame_t)
-            prev_frame_t = new_frame_t
-            fps = int(fps)
-            #cv2.putText(mimg, str(fps), (7, 70), font, 2, (100, 255, 0), 3, cv2.LINE_AA)
-            cv2.namedWindow("Thermal Video", cv2.WINDOW_AUTOSIZE)
-            cv2.imshow('Thermal Video', mimg)
-            if cv2.waitKey(1) == ord('q'):
-                exit(-99)
-
+    def processThermalVideo(self, q:Queue, canRun:multiprocessing.Event):
+        print('Starting thermal video processor ...')
+        tmQ:Queue = self.qDict[SoundCamConnector.DTypes.O_THM.name]
+        start_t = time.time()
+        hits = 0
         while(canRun.is_set()):
             if(not q.empty()):
                 decoded = self.protocol.unpackDecodeThermalVideoData(q.get())
                 if(self.cfgObj['visualizeThermal']):
-                    adj = decoded[1]
-                    if(decoded[0].DataType == 
-                       DataObjects.ThermalDatatype.TelemetryEnabledTLinearEnabledRaw14Res0_1K.value):
-                        adj = decoded[1] /10.0
-                        adj -= 273.15
-                    elif(decoded[0].DataType == 
-                       DataObjects.ThermalDatatype.TelemetryEnabledTLinearEnabledRaw14Res0_01K.value):
-                        adj = decoded[1] /100.0
-                        adj -= 273.15
-                    visualizeThermal(adj)
+                    self.visualizeThermal(decoded[1])
+                else:
+                    tmvid = self.visualizeThermal(decoded[1], getResult=True)
+                    if(not tmQ.full()): #push data to Q
+                        tmQ.put(tmvid)
+                    else:
+                        try:
+                            tmQ.get_nowait() # remove data
+                        except Exception as ex:
+                            pass
+                        tmQ.put(tmvid)
+                
+                hits += 1
+                if((time.time() - start_t >= 1.0) and self.debug):
+                    print('================================================================Thermal @ %i Hz' % hits)
+                    hits = 0
+                    start_t = time.time()
 
     '''Updates the plot'''
     def plotUpdater(self, frame):
@@ -1066,13 +1036,12 @@ class SoundCamConnector(object):
         self.spcQ_RT: Queue = self.qDict[SoundCamConnector.DTypes.O_SPEC.name]
         self.audQ_RT: Queue = self.qDict[SoundCamConnector.DTypes.O_AUD.name]
         #wait for data
-        while(True):
+        while(canRun.is_set()):
             print('Awaiting data ...')
             if(self.scamUtils.canRunAnalysis()):
                 print('Ready to run analysis ...')
                 break
             else:
-                #print('Length of array: ', len(self.scamUtils.specGlobalBuffer))
                 time.sleep(0.5)
 
         self.ax:list[Axes] = []
@@ -1151,6 +1120,7 @@ class SoundCamConnector(object):
         # ffmpegWritter = FFMpegWriter(fps=15)      
         
         try:
+            print('Showing figure')
             plt.show()
             print('Figure closed')
             # ani.save('stream.mov', writer=ffmpegWritter)
@@ -1159,8 +1129,6 @@ class SoundCamConnector(object):
 
         while(canRun.is_set()):
             pass
-
-        
         plt.close()
 
     def displayProcess(self, canRun:multiprocessing.Event):
@@ -1170,7 +1138,7 @@ class SoundCamConnector(object):
     ''' Post Processes data for comprehensive visualization '''
     def postProc(self):
         print('Starting post-processing process')
-        while(True):
+        while(self.processData.is_set()):
             try:
                 print('post processing')
                 vimg = self.vid_recv.recv()
@@ -1188,9 +1156,11 @@ class SoundCamConnector(object):
                 print(ex)
     
     '''
-        Utility methods
+    ----------------------------------------------------------------------DATA ACCESS METHODS
     '''
 
+    def hasStatus(self):
+        return self.protocol.p_hasInitialStatus()
     '''
         Returns camera status
             - deviceId
@@ -1204,23 +1174,194 @@ class SoundCamConnector(object):
             - deviceState
             - subState
             - deviceIP
+            - features
     '''
-    def getStatus(self): #TODO to be implemented 
-        pass
+    def getStatus(self): 
+        return self.protocol.getDeviceStatus()
+    
+    ''' Return connection status '''
+    def isConnected(self):
+        return self.connected
+
+    ''' Returns the BW Video frame '''
+    def getBWVideo(self):
+        if(not self.qDict[SoundCamConnector.DTypes.O_BW.name].empty()):
+            return self.qDict[SoundCamConnector.DTypes.O_BW.name].get()
+        return None
+    
+    ''' Returns the Overlayed video frame '''
+    def getOverlayVideo(self):
+        if(not self.qDict[SoundCamConnector.DTypes.O_VID.name].empty()):
+            return self.qDict[SoundCamConnector.DTypes.O_VID.name].get()
+        return None
+    
+    ''' Returns the Acoustic Video frame '''
+    def getACVideo(self):
+        if(not self.qDict[SoundCamConnector.DTypes.O_ACVID.name].empty()):
+            return self.qDict[SoundCamConnector.DTypes.O_ACVID.name].get()
+        return None
+    
+    ''' Returns the Thermal Video frame '''
+    def getTMVideo(self):
+        if(not self.qDict[SoundCamConnector.DTypes.O_THM.name].empty()):
+            return self.qDict[SoundCamConnector.DTypes.O_THM.name].get()
+        return None
+    
+    ''' Returns the Audio frame '''
+    def getAudio(self):
+        with self.aud_semaphore:
+            return self.scamUtils.getAudioBuffer()[-2048:]
+        
+    ''' Returns the Audio Info '''
+    def getAudioInfo(self):
+        if(not self.qDict[SoundCamConnector.DTypes.O_AUD.name].empty()):
+            decoded = self.qDict[SoundCamConnector.DTypes.O_AUD.name].get()
+            meta:DataObjects.MDAudioData2 = DataObjects.MDAudioData2._make(decoded[1])
+            srate = int(1/meta.dt)
+            return dict({'channels': 1,
+                        'sample_rate': srate,
+                        'bitrate': 16 * srate})
+        return None
+    
+    ''' Returns the Spectrum frame '''
+    def getSpectrum(self):
+        with self.spec_semaphore:
+            return (self.scamUtils.p_getFrequencies(), self.scamUtils.getSpectrumBuffer()[-1023:])
+    
+    ''' Returns the current blob data '''
+    def getBlobData(self):
+        return self.scamUtils.p_getBlobData()
+    
+    ''' Returns the Mean Energy and Std. Dev in the Spectrum '''
+    def getEnergy(self):
+        return self.scamUtils.computeEnergy(getArray=False)
+    
+    ''' Returns the detection status '''
+    def hasDetection(self):
+        return self.scamUtils.p_getDetection()
+    
+    ''' Sets & Returns the scaling Mode for the Acoustic filter '''
+    def setScalingMode(self, mode, max=None, dynamic=5.0, crest=3.1):
+        #configure acoustic filter
+        self.scamUtils.setScalingMode(mode=mode, dynamic=dynamic, 
+                                    max=max, crest=crest)
+        return True
+    
+    def getScalingMode(self):
+        return self.scamUtils.getScalingMode()
+
+    '''
+    --------------------------------------------------------------------VISUALIZATION METHODS
+    '''
+
+    '''Visualizes Thermal Video'''
+    def visualizeThermal(self, frame, getResult=False):
+        if(frame is None):
+            return None
+        frame = np.interp(frame, (-10, 50), (0, 255))
+        frame = frame.astype('uint8')
+        mimg = np.zeros((120, 160, 3), dtype=np.uint8)
+        cv2.applyColorMap(frame, cv2.COLORMAP_INFERNO, mimg)
+        if(getResult):
+            return mimg
+        cv2.namedWindow("Thermal Video", cv2.WINDOW_AUTOSIZE)
+        cv2.imshow('Thermal Video', mimg)
+        if cv2.waitKey(1) == ord('q'):
+            exit(-99)
+
+    '''Visualizes Acoustic Video'''
+    def visualizeACVideo(self, frame, getResult=False):
+        truth_tbl = np.where(frame[:,:] == 0.0, True, False)
+        frame *= 255
+        frame = frame.astype('uint8')
+        mimg = np.zeros((48, 64, 3), dtype=np.uint8)
+        cv2.applyColorMap(frame, cv2.COLORMAP_JET, mimg)
+        mimga = cv2.cvtColor(mimg, cv2.COLOR_RGB2RGBA)
+        mimga[truth_tbl, 3] = 0
+
+        #kernel = np.ones((8,8),np.float32)/64
+        #filt_img = cv2.filter2D(mimga,-1,kernel)
+        #filt_img = cv2.GaussianBlur(mimga, (5,5), 0)
+        rimg_up = cv2.resize(mimga, 
+                                (self.cfgObj['camera_W'], self.cfgObj['camera_H']), 
+                                interpolation= cv2.INTER_AREA)
+        boxes_ids:list = self.objTracker.detection(rimg_up, track=False)
+        blobData = []
+        if(boxes_ids is not None):
+            if(len(boxes_ids) == 0):
+                self.objTracker.resetIdCount()
+            else:
+                blobData = boxes_ids[0]
+                #print("Detection: {0}".format(boxes_ids))
+                for box_id in boxes_ids:
+                    x,y,w,h,A = box_id
+                    if(A > blobData[4]):
+                        blobData = box_id
+            # print("Detection x-y: {0}".format(blobData))
+            # print("Has Positive Detection? {0}".format(self.hasDetection()))
+        if(getResult):
+            #update blobData
+            self.scamUtils.updateBlobData(blobData)
+            return rimg_up
+        cv2.namedWindow("Acoustic Video", cv2.WINDOW_AUTOSIZE)
+        #bimg_up = cv2.GaussianBlur(rimg_up, (5,5), 0)
+        cv2.imshow('Acoustic Video', rimg_up)
+        if cv2.waitKey(1) == ord('q'):
+            exit(-99)
+    
+    ''' Visualizes Black/White Video [with Overlay] '''
+    def visualizeBWVideo(self, frame, acFrame:np.array=None, getResult=False):
+        bw_img = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGRA)
+        if(self.debug):
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            self.new_frame_t = time.time()
+            fps = 1/(self.new_frame_t - self.prev_frame_t)
+            self.prev_frame_t = self.new_frame_t
+            fps =  int(fps)
+            cv2.putText(bw_img, str(fps), (7, 70), font, 2, (100, 255, 0), 3, cv2.LINE_AA)
+        if(self.cfgObj['visualizeOverlay']):
+            if(acFrame is not None): # overlay acoustic on video image
+                #print(acFrame.shape)
+                # store the alpha channels only
+                m1 = bw_img[:,:,3]
+                m2 = acFrame[:,:,3]
+
+                # invert the alpha channel and obtain 3-channel mask of float data type
+                m1i = cv2.bitwise_not(m1)
+                alpha1i = cv2.cvtColor(m1i, cv2.COLOR_GRAY2BGRA)/255.0
+
+                m2i = cv2.bitwise_not(m2)
+                alpha2i = cv2.cvtColor(m2i, cv2.COLOR_GRAY2BGRA)/255.0
+
+                # Perform blending and limit pixel values to 0-255 (convert to 8-bit)
+                b1i = cv2.convertScaleAbs(acFrame*(1-alpha2i) + bw_img*alpha2i)
+                if(getResult):
+                    return b1i
+                cv2.imshow('Video - Overlay', b1i)
+        else:
+            if(getResult):
+                return bw_img
+            cv2.imshow('Video Data', bw_img)
+        if cv2.waitKey(1) == ord('q'):
+            exit(-99)
         
 
 if __name__ == '__main__':
-    rosObj = SoundcamROS()
-    camObj = SoundCamConnector(debug=True, cfgObj=rosObj.cfg)
+    from config import cfgContext
+    camObj = SoundCamConnector(debug=True, cfgObj=cfgContext)
+
     atexit.register(camObj.release_shared)
     atexit.register(camObj.disconnect)
 
     if(camObj.connect()):
         print('Sending Initial configuration and preparing state')
-        camObj.configure()
+        camObj.initialConfigure()
+        while(not camObj.hasStatus()):
+            pass
+        print(camObj.getStatus(), '\n')
 
     #camObj.restartCamera()
     #time.sleep(3.0)
-    camObj._startMeasurement()
+    camObj.startMeasurement()
     while(camObj.processData):
         time.sleep(0.001)
