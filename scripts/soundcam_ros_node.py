@@ -179,7 +179,7 @@ class SoundcamROS(object):
         msg = AudioDataStamped()
         msg.header.frame_id = self.cfg['frame']
         msginfo = AudioInfo()
-        start_t = rospy.Time.now()
+        start_t = rospy.Time.now().secs
         info_published = False
         while(not rospy.is_shutdown()):
             aud_arr:np.array = fn()
@@ -191,7 +191,7 @@ class SoundcamROS(object):
                     msg.audio.data = aud_arr
                     pub.publish(msg)
             if((pubinfo.get_num_connections() > 0) and 
-               ((rospy.Time.now() - start_t) > 1.0) and 
+               ((rospy.Time.now().secs - start_t) > 1.0) and 
                not info_published): # publish audio info
                 meta = fninfo()
                 if(meta):
@@ -199,7 +199,7 @@ class SoundcamROS(object):
                     msginfo.sample_rate = meta['sample_rate']
                     msginfo.bitrate = meta['bitrate']
                     pubinfo.publish(msginfo)
-                    start_t = rospy.Time.now()
+                    start_t = rospy.Time.now().secs
                     info_published = True
             rate.sleep()
 
@@ -490,18 +490,19 @@ class SoundcamROS(object):
                     (mode, dynamic, maximum, crest) = self.camera.getScalingMode()
                     dynamic = req.op_command1
                     crest = req.op_command2
-                    if(not self.camera.setScalingMode()):
+                    if(not self.camera.setScalingMode(mode=mode, dynamic=dynamic, 
+                                                      crest=crest, max=maximum)):
                         resp.results = SoundcamServiceResponse.FAIL
                 elif(req.command == SoundcamServiceRequest.SET_SCALING_MODE):
                     (mode, dynamic, maximum, crest) = self.camera.getScalingMode()
-                    mode = req.op_command1
+                    mode = int(req.op_command1)
                     if(mode == 0):
-                        maximum = req.op_command1
+                        maximum = req.op_command2
                     else:
-                        dynamic = req.op_command1
-                        crest = req.op_command2
+                        dynamic = req.op_command2
+                        crest = req.op_command3
                     if(not self.camera.setScalingMode(mode=mode, dynamic=dynamic, 
-                                        max=maximum, crest=crest)):
+                                        max=None, crest=crest)):
                         resp.results = SoundcamServiceResponse.FAIL
                 elif(req.command == SoundcamServiceRequest.SCAN_DETECT):
                     self.autoDetect = True if (req.op_command1 == 1) else False

@@ -27,12 +27,13 @@ uint8 STOP_RECORD = 2
 uint8 CANCEL_RECORD = 3
 uint8 SNAPSHOT = 4          #op_command1 = {0->BW Image, 3->Thermal Image, 5-> Overlayed Image}
 uint8 SET_DYNAMIC_CREST = 5 #op_command1 = DYNAMIC, op_command2 = CREST
-uint8 SET_SCALING_MODE = 6  #0-off ->(op_command1=maximum), 1-Auto, 2-Smart -> (op_command1=dynamic, op_command2=crest)
+uint8 SET_SCALING_MODE = 6  #op_command1 (0-off, 1-Auto, 2-Smart) |0-off ->(op_command2=maximum), 1-Auto, 2-Smart -> (op_command2=dynamic, op_command3=crest)
 uint8 SCAN_DETECT = 7       #op_command1(scan) -> 1-true, 0-false | op_command2(detect)-> 1-true, 0-false
 uint8 command
 
 float32 op_command1
 float32 op_command2
+float32 op_command3
 
 #if command_type=OP_CMD: -> set extras {"key":"value"}
 diagnostic_msgs/KeyValue[] extras               

@@ -376,7 +376,7 @@ class SoundCamConnector(object):
             self.sendData(query=query)
 
             #configure acoustic filter
-            self.scamUtils.setScalingMode(mode=mode, dynamic=dynamic, 
+            self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
                                           max=maximum, crest=crest)
         except Exception as ex:
             print('Error Configuring device!', ex)
@@ -1243,7 +1243,7 @@ class SoundCamConnector(object):
     ''' Sets & Returns the scaling Mode for the Acoustic filter '''
     def setScalingMode(self, mode, max=None, dynamic=5.0, crest=3.1):
         #configure acoustic filter
-        self.scamUtils.setScalingMode(mode=mode, dynamic=dynamic, 
+        self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
                                     max=max, crest=crest)
         return True
     
