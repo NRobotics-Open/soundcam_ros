@@ -38,7 +38,7 @@ class SoundcamROS(object):
                                 minFrequency=self.cfg['minFrequency'])
         self.curMediaType = [int(x) for x in '0|1|2|3|4|5'.split('|')] #all
         self.curCaptureTime = self.cfg['max_record_time'] #how long to record onAutoDetection
-        self.autoDetect = False
+        self.autoDetect = self.cfg['auto_detect']
         self._isStartup = True
         # Stream recording parameters
         self._manual_frames_ls = list()
@@ -247,7 +247,7 @@ class SoundcamROS(object):
                                         maxFreq=preset.maxFrequency,
                                         dynamic=preset.dynamic,
                                         crest=preset.crest,
-                                        maximum=preset.maximum)
+                    maximum=preset.maximum if (preset.maximum > 0.0) else None)
                 
     def getRobotPose(self):
         try:
@@ -360,6 +360,7 @@ class SoundcamROS(object):
                     media = list()
                     if(streamType == SoundcamServiceRequest.ALL):
                         filename = 'VIDEO_' + timestamp + '.mp4'
+                        #print('Path details: getPath-> {0}, filename-> {1}'.format(self.utils.getPath(), filename))
                         self.utils.createVideoFromFrames(self._auto_bw_frames_ls, 
                                                     os.path.join(self.utils.getPath(), filename))
                         media.append(filename)
@@ -430,6 +431,7 @@ class SoundcamROS(object):
 
     
     def serviceCB(self, req:SoundcamServiceRequest):
+        print("Incoming Service Call with params: ", req)
         resp = SoundcamServiceResponse()
         resp.results = SoundcamServiceResponse.SUCCESS
         if(req.command_type == SoundcamServiceRequest.CMD_TYPE_CONFIG):
@@ -440,9 +442,10 @@ class SoundcamROS(object):
                     self.curMediaType = media
                 else:
                     self.curMediaType = SoundcamServiceRequest.ALL
-                # Get Mission Parameters
-                dt:KeyValue = req.extras[0]
-                self.utils.prepareDirectory(int(dt.key), dt.value)
+                # Get Extra Parameters
+                if(len(req.extras) > 0):
+                    dt:KeyValue = req.extras[0]
+                    self.utils.prepareDirectory(int(dt.key), dt.value)
                 #Configure camera preset
                 if(self.camera.isMeasuring()): #stop measurement if running
                     self.camera.stopMeasurement()
@@ -462,7 +465,8 @@ class SoundcamROS(object):
         elif(req.command_type == SoundcamServiceRequest.CMD_TYPE_OP):
             try:
                 if(req.command == SoundcamServiceRequest.RESET_CAMERA):
-                    self._isStartup = self.camera.restartCamera()
+                    if(not self.camera.restartCamera()):
+                        resp.results = SoundcamServiceResponse.FAIL
                 elif((req.command == SoundcamServiceRequest.START_RECORD)):
                     dstrm = int(req.op_command1)
                     if(dstrm not in [SoundcamServiceRequest.VIDEO_STREAM,
@@ -610,17 +614,22 @@ class SoundcamROS(object):
         rate = rospy.Rate(1)
         while(not rospy.is_shutdown() and self.canRun):
             if(self.camera.pingCamera(deviceIP=self.cfg['ip'])):
-                if(not self.camera.isConnected()):
+                if((not self.camera.isConnected()) and self.camera.isAlive()):
                     if(self.camera.connect()):
                         rospy.loginfo('Connection established!')
-                if(self.camera.hasStatus()):
-                    rospy.loginfo('Initial Device status received...')
-                    rospy.loginfo('Sending Initial configuration and preparing device ...')
-                    self.camera.initialConfigure()
-                    self.camera.startMeasurement()
-                    break
-                else:
-                    rospy.loginfo('Awaiting Initial Device status ...')
+                    else:
+                        rospy.logwarn('Retrying to connect in 3 seconds ...')
+                        rospy.sleep(3.0)
+                        continue
+                if(self.camera.isConnected()):
+                    if(self.camera.hasStatus()):
+                        rospy.loginfo('Initial Device status received...')
+                        rospy.loginfo('Sending Initial configuration and preparing device ...')
+                        self.camera.initialConfigure()
+                        self.camera.startMeasurement()
+                        break
+                    else:
+                        rospy.loginfo('Awaiting Initial Device status ...')
             else:
                 rospy.loginfo('Unable to reach Soundcamera on IP:{0} \n \
                               Trying again after {1} seconds'.format(self.cfg['ip'], 3))
@@ -633,12 +642,18 @@ class SoundcamROS(object):
         rate = rospy.Rate(40)
         record_start_t = time.time()
         self.restPeriod_t = time.time()
+        firstrun = True
         while(not rospy.is_shutdown()):
             if(self._isStartup):
                 if(self.attemptConnection()):
-                    self.bringUpInterfaces()
+                    if(firstrun):
+                        self.bringUpInterfaces()
+                        firstrun = False
+                        rospy.loginfo_once('SC| Running ...')
+                    else:
+                        rospy.loginfo_once('SC| Restarted ...')
                     self._isStartup = False
-                    rospy.loginfo_once('SC| Running ...')
+                    
             else: 
                 if(self.autoDetect and ((time.time()-self.restPeriod_t) >= self.cfg['rest_time'])):
                     if(self.camera.hasDetection() and not self.recordTrigger):
@@ -647,7 +662,8 @@ class SoundcamROS(object):
                         self.robotPose = self.getRobotPose()
                         record_start_t = time.time()
 
-                    if(self.camera.hasDetection() and ((time.time()-record_start_t)) >= self.curCaptureTime):
+                    if(self.camera.hasDetection() and self.recordTrigger and 
+                       ((time.time()-record_start_t)) >= self.curCaptureTime):
                         rospy.loginfo('SC| Saving AUTO recording [1] ...')
                         self._saveRecording(auto=True, start_t=record_start_t, pose_info=self.robotPose)
                         self.restPeriod_t = time.time()
@@ -658,6 +674,11 @@ class SoundcamROS(object):
                         self.restPeriod_t = time.time() 
 
             self.publishDetection(self.camera.hasDetection(), self.camera.getBlobData())
+            if(not self.camera.isAlive()):
+                rospy.logwarn('Camera disconnected!')
+                rospy.loginfo('Reconnection attempt in 2 seconds ...')
+                rospy.sleep(2.0)
+                self._isStartup = True
             rate.sleep()
 
 if __name__ == '__main__':

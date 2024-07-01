@@ -391,6 +391,9 @@ class CameraProtocol(object):
     '''
             OTHER METHODS
     '''
+    def setInitialStatus(self, val):
+        self.hasInitialStatus = val
+
     def getDeviceState(self):
         try:
             return (self.DeviceState, self.SubState)
@@ -974,7 +977,7 @@ class CameraProtocolProxy(BaseProxy):
                  'writeCameraLighting', 'generateReadRequest', 'ConfigureCamera', \
                  'dataToSendConfig', 'setState', 'startStopProcedure', \
                  'getDeviceState', 'p_getPatterns', 'p_isConfigured', 'p_hasInitialStatus', \
-                 'isStreaming')
+                 'isStreaming', 'setInitialStatus')
     
     #-------------------------------------------parameter accessors
     def p_isConfigured(self):
@@ -1052,6 +1055,9 @@ class CameraProtocolProxy(BaseProxy):
     
     def isStreaming(self):
         return self._callmethod('isStreaming')
+    
+    def setInitialStatus(self, val:bool):
+        return self._callmethod('setInitialStatus', (val,))
     
 
 class CameraProtocolManager(BaseManager):

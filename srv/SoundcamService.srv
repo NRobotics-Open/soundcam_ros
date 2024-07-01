@@ -36,6 +36,8 @@ float32 op_command2
 float32 op_command3
 
 #if command_type=OP_CMD: -> set extras {"key":"value"}
+#if CMD_TYPE_CONFIG
+    #0- [MissionID, MissionName]
 diagnostic_msgs/KeyValue[] extras               
 ---
 uint8 SUCCESS = 0

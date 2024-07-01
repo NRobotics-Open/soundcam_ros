@@ -51,6 +51,7 @@ overlayConfig: '1000' # [Acoustic, Spectrum, Audio, Thermal] -> only Acoustic im
 
 ## ROS PARAMETERS
 frame: 'soundcam'
+auto_detect: True
 detection_xy_offset: 25  #offset for centering the detected blob - NOT USED
 mean_energy_thresh: 20.0
 energy_std_dev: 10.0

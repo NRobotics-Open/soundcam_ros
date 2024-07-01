@@ -67,7 +67,6 @@ class SoundCamConnector(object):
         self.testing = False
         self.invokeId = 1
         self.cfgObj = cfgObj
-        self.connected = False
 
         #debug parameters
         self.new_frame_t = 0
@@ -107,6 +106,7 @@ class SoundCamConnector(object):
         self.processData.set()
         self.visualUp = False
         self.connected = False
+        self.is_alive = False
 
         #prepare queues
         self.processes = list()
@@ -205,6 +205,7 @@ class SoundCamConnector(object):
                                 stdout=subprocess.PIPE)
         proc.wait()
         if(proc.poll() == 0):
+            self.is_alive = True
             return True
             # if((time.time() - start_t) > CONNECT_TIMEOUT):
             #     print('Camera not connected. Check network configuration!')
@@ -229,7 +230,7 @@ class SoundCamConnector(object):
         except Exception as ex:
             print('Failure Establishing connection to device! ', ex)
             self.connected = False
-            exit(-1)
+            return False
         print("\nSocket initialized on: \t IP| %s PORT| %d" % (ip_addr, port))
         #Request device Identification
         query = self.protocol.generateReadRequest(command=CommandCodes.IdentificationReq, 
@@ -253,10 +254,29 @@ class SoundCamConnector(object):
 
     '''Sends command to reset the camera'''
     def restartCamera(self):
+        #disable cyclic loop
+        self.recvStream = False
+        self.connected = False
+        self.is_alive = False
+        #send reset command
         query = self.protocol.generateReadRequest(command=CommandCodes.ResetReq, 
                                                   invokeId=self.invokeId)
         self.sendData(query=query)
+        #disable initial status flag
+        self.protocol.setInitialStatus(False)
+        #clear buffers
+        self.scamUtils.resetBuffers()
+        for _,q in self.qDict.items():
+            self._clearQueue(q)
+
         return True
+    
+    def _clearQueue(self, q:Queue):
+        while(not q.empty()):
+            try:
+                q.get_nowait()
+            except Exception:
+                pass
 
     def disconnect(self):
         self.processData.clear()
@@ -426,31 +446,34 @@ class SoundCamConnector(object):
         commonstatus_t = time.time()
         while(self.processData.is_set()):
             if(self.connected):
-                res = self.sock.recv(self.bufSize)
-                if(res):
-                    if(self.recvStream):
-                        self.globalQ.put(res)
-                    else: #if not streaming
-                        try:
-                            self.protocol.unpackDecodeResponse(response=res)
-                        except Exception as ex:
-                            print('\nError Unpacking and Decoding ...')
+                try:
+                    res = self.sock.recv(self.bufSize)
+                    if(res):
+                        if(self.recvStream):
+                            self.globalQ.put(res)
+                        else: #if not streaming
+                            try:
+                                self.protocol.unpackDecodeResponse(response=res)
+                            except Exception as ex:
+                                print('\nError Unpacking and Decoding ...')
 
-                now = time.time()
-                if((not self.recvStream) and self.protocol.p_isConfigured()): #query for common status when not receiving stream
-                    if((now - commonstatus_t) >= 0.5):
-                        query = self.protocol.generateReadRequest(command=CommandCodes.ReadDataObjectReq, invokeId=self.invokeId, dataLs=[DataObjects.Ids.CommonStatus])
-                        self.sendData(query)
-                        commonstatus_t = now
-                
-                if((now - start_t) >= 10.0 and self.connected and self.debug):
-                    print('Cyclic loop running ...')
-                    start_t = time.time()
+                    now = time.time()
+                    if((not self.recvStream) and self.protocol.p_isConfigured()): #query for common status when not receiving stream
+                        if((now - commonstatus_t) >= 0.5):
+                            query = self.protocol.generateReadRequest(command=CommandCodes.ReadDataObjectReq, invokeId=self.invokeId, dataLs=[DataObjects.Ids.CommonStatus])
+                            self.sendData(query)
+                            commonstatus_t = now
+                    
+                    if((now - start_t) >= 10.0 and self.connected and self.debug):
+                        print('Cyclic loop running ...')
+                        start_t = time.time()
 
-                """ if((now - heart_t) >= heartrate):
-                    #send ACK to device
-                    heart_t = now """
-                #time.sleep(0.0001)
+                    """ if((now - heart_t) >= heartrate):
+                        #send ACK to device
+                        heart_t = now """
+                    #time.sleep(0.0001)
+                except Exception:
+                    pass
             else:
                 #print('Awaiting socket connnection ...')
                 time.sleep(0.1)
@@ -490,8 +513,7 @@ class SoundCamConnector(object):
             elif(k == SoundCamConnector.DTypes.RAW.name):
                 rawQ:Queue = v
 
-            
-        
+                  
         dmsg:MDDataMessage = None
         isHdrPkt = False
         canPrintLen = True
@@ -499,6 +521,8 @@ class SoundCamConnector(object):
         while(canRun.is_set()):
             #read queue and filter
             if(not globalQ.empty()):
+                if(not protocol.p_hasInitialStatus()):
+                    self._clearQueue(globalQ)
                 # if(globalQ.qsize() > 50):
                 #     print('Global Queue Size: ', globalQ.qsize())
                 
@@ -826,14 +850,16 @@ class SoundCamConnector(object):
                     if(self.cfgObj['visualizeAcVideo']):
                         self.visualizeACVideo(norm0_1)
 
-                    if(not acQ.full()): #push acoustic data to overlay_Q
-                        acQ.put(self.visualizeACVideo(norm0_1, getResult=True))
-                    else:
-                        try:
-                            acQ.get_nowait() # remove data
-                        except Exception as ex:
-                            pass
-                        acQ.put(self.visualizeACVideo(norm0_1, getResult=True))
+                    post_proc = self.visualizeACVideo(norm0_1, getResult=True)
+                    if(post_proc is not None):
+                        if(not acQ.full()): #push acoustic data to overlay_Q
+                            acQ.put(post_proc)
+                        else:
+                            try:
+                                acQ.get_nowait() # remove data
+                            except Exception as ex:
+                                pass
+                            acQ.put(post_proc)
                 
                 hits += 1
                 if((time.time() - start_t >= 1.0) and self.debug):
@@ -1182,6 +1208,10 @@ class SoundCamConnector(object):
     ''' Return connection status '''
     def isConnected(self):
         return self.connected
+    
+    ''' Return camera alive status '''
+    def isAlive(self):
+        return self.is_alive
 
     ''' Returns the BW Video frame '''
     def getBWVideo(self):
@@ -1271,9 +1301,14 @@ class SoundCamConnector(object):
 
     '''Visualizes Acoustic Video'''
     def visualizeACVideo(self, frame, getResult=False):
+        if(frame is None):
+            return None
         truth_tbl = np.where(frame[:,:] == 0.0, True, False)
         frame *= 255
-        frame = frame.astype('uint8')
+        try:
+            frame = frame.astype('uint8')
+        except Exception as e:
+            pass
         mimg = np.zeros((48, 64, 3), dtype=np.uint8)
         cv2.applyColorMap(frame, cv2.COLORMAP_JET, mimg)
         mimga = cv2.cvtColor(mimg, cv2.COLOR_RGB2RGBA)

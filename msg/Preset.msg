@@ -7,5 +7,5 @@ float32 crest #5-15
 float32 distance # approx. distance of sound source (<=3.5m)
 float32 maximum  # maximum threshold (fixed scaling)
 float32 dynamic
-int16 maxFrequency #maximum configured frequency
-int16 minFrequency #minimum configured frequency
+int32 maxFrequency #maximum configured frequency
+int32 minFrequency #minimum configured frequency

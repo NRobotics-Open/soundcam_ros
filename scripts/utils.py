@@ -197,9 +197,12 @@ class SoundUtils():
         #push raw to temporal buffer
         # self.temporalBuffer = np.roll(self.temporalBuffer, -3072, axis=0)
         # self.temporalBuffer[-3072:] = dt[:]
-        dt_norm = (dt - self.minScale)/(self.maxScale - self.minScale)
-        dt_norm[np.where(dt_norm < 0.0)] = 0.0
-        dt_norm[np.where(dt_norm > 1.0)] = 1.0
+        try:
+            dt_norm = (dt - self.minScale)/(self.maxScale - self.minScale)
+            dt_norm[np.where(dt_norm < 0.0)] = 0.0
+            dt_norm[np.where(dt_norm > 1.0)] = 1.0
+        except RuntimeWarning as e:
+            return None
 
         newacBuffer[-3072:] = dt_norm[:]
         self.acousticBuffer[: , :] = newacBuffer[:, :]
@@ -297,6 +300,12 @@ class SoundUtils():
                 buffer = self.specGlobalBuffer[-self.cnt : , :]
                 pickle.dump(buffer, f)
             print('Saved to file!')
+    
+    def resetBuffers(self):
+        self.acousticBuffer[:, :] = 0.0
+        self.specLocalBuffer[:, :] = 0.0
+        self.specGlobalBuffer[:, :] = 0.0
+        self.energyBuffer[:, :] = 0.0
 
 
 class SoundUtilsProxy(BaseProxy):
@@ -306,7 +315,7 @@ class SoundUtilsProxy(BaseProxy):
                  'writeOutVar', 'writeAudio', 'updateSpectogramPlot', 'canRunAnalysis', \
                  'initSpectogram', 'updateAcousticBuffer', 'updateAudioBuffer', \
                  'updateSpectrumBuffer', 'p_getBlobData', 'updateBlobData', \
-                 'p_getDetection', 'updateDetection', 'getScalingMode')
+                 'p_getDetection', 'updateDetection', 'getScalingMode', 'resetBuffers')
     
     #-------------------------------------------parameter accessors
     def p_getWindow(self):
@@ -379,6 +388,9 @@ class SoundUtilsProxy(BaseProxy):
     
     def updateDetection(self, flag:bool):
         return self._callmethod('updateDetection', (flag,))
+    
+    def resetBuffers(self):
+        return self._callmethod('resetBuffers')
     
 
 class SoundUtilsManager(BaseManager):
@@ -530,19 +542,21 @@ class ROSLayerUtils(object):
         if(self.path is not None):
             return self.path
         else:
-            self.mediaDir
+            return self.mediaDir
     
     def addMetaData(self, media, pose, isActionPoint=False, id=None):
-        obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(self.localId if (id is None) else id, 
+        assignedId = self.localId if (id is None) else id
+        obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
                                             pose[0], pose[1], pose[2], media)
-        if(os.path.exists(os.path.join(self.path, 'meta-data.yaml'))): #read meta data file
-            with open(os.path.join(self.path, 'meta-data.yaml') , 'r') as infofile:
-                self.metaData = infofile
+        path = self.getPath()
+        if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
+            with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
+                self.metaData = yaml.safe_load(infofile)
         
+        hasId = False
         if(isActionPoint):
-            hasId = False
             for obj_old in self.metaData['actionpoints']:
-                if(obj_old['id'] == id):
+                if(obj_old['id'] == assignedId):
                     hasId = True
                     for dt in obj.media:
                         obj_old['media'].append(dt)
@@ -550,10 +564,18 @@ class ROSLayerUtils(object):
             if(not hasId):
                 self.metaData['actionpoints'].append(obj._asdict())
         else:
-            self.metaData['datapoints'].append(obj._asdict())
+            for obj_old in self.metaData['datapoints']:
+                #print('Existing content: ', obj_old)
+                if(obj_old['id'] == assignedId):
+                    hasId = True
+                    for dt in obj.media:
+                        obj_old['media'].append(dt)
+                    break
+            if(not hasId):
+                self.metaData['datapoints'].append(obj._asdict())
             self.localId += 1
 
-        with open(os.path.join(self.path, 'meta-data.yaml') , 'w') as infofile: #write meta data file
+        with open(os.path.join(path, 'meta-data.yaml') , 'w') as infofile: #write meta data file
             yaml.dump(self.metaData, infofile)
 
     def eulerDistance(self, coords:list):
