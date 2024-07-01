@@ -25,7 +25,8 @@ class SoundcamROS(object):
     def __init__(self) -> None:
         self.canRun = True
         self.cfg = cfgContext
-        self.camera = SoundCamConnector(debug=False, cfgObj=self.cfg)
+        self.debug = self.cfg['ros_debug']
+        self.camera = SoundCamConnector(debug=self.cfg['driver_debug'], cfgObj=self.cfg)
         self.utils = ROSLayerUtils()
         
         #operational parameters
@@ -144,6 +145,8 @@ class SoundcamROS(object):
         for i,field in enumerate(featureObj._fields):
             msg.features.append(KeyValue(field, str(featureObj.__getitem__(i))))
         pub.publish(msg)
+        if(self.debug):
+            rospy.loginfo_throttle(3, 'SC| Sent status msg')
 
     def videoPublishing(self, pub:rospy.Publisher, fn, streamType):
         rate = rospy.Rate(50)
@@ -171,6 +174,9 @@ class SoundcamROS(object):
                         #     img = self.bridge.cv2_to_imgmsg(img_arr, "mono8")
                         # else:
                         #     img = self.bridge.cv2_to_imgmsg(img_arr, "bgr8")
+                        if(self.debug):
+                            rospy.loginfo_throttle(3, 
+                                    'SC| Video Streaming on Stream type -> {0}'.format(SoundcamServiceRequest.VIDEO_STREAM))
                         self.convertPublishCompressedImage(pub=pub, cv_image=img_arr)
             rate.sleep()
     
@@ -190,6 +196,8 @@ class SoundcamROS(object):
                 if(aud_arr):
                     msg.audio.data = aud_arr
                     pub.publish(msg)
+                    if(self.debug):
+                        rospy.loginfo_throttle(3, 'SC| Streaming audio')
             if((pubinfo.get_num_connections() > 0) and 
                ((rospy.Time.now().secs - start_t) > 1.0) and 
                not info_published): # publish audio info
@@ -201,6 +209,8 @@ class SoundcamROS(object):
                     pubinfo.publish(msginfo)
                     start_t = rospy.Time.now().secs
                     info_published = True
+            else:
+                info_published = False
             rate.sleep()
 
     def spectrumPublishing(self, pub:rospy.Publisher, fn):
@@ -212,20 +222,28 @@ class SoundcamROS(object):
                 msg.header.stamp = rospy.Time.now()
                 (msg.frequency, msg.amplitude) = fn()
                 pub.publish(msg)
+                if(self.debug):
+                    rospy.loginfo_throttle(5, 'SC| Streaming spectrum data')
             rate.sleep()
     
     ''' Sends alert to other nodes about current detections '''
     def publishDetection(self, val, blobCoords:list):
-        msg = SoundcamDetection()
-        msg.header.frame_id = self.cfg['frame']
-        msg.header.stamp = rospy.Time.now()
-        msg.preset = self.curPreset
-        msg.detector = val
-        msg.blobXY = blobCoords
-        self.detection_pub.publish(msg)
+        if(self.detection_pub.get_num_connections() > 0):
+            msg = SoundcamDetection()
+            msg.header.frame_id = self.cfg['frame']
+            msg.header.stamp = rospy.Time.now()
+            msg.preset = self.curPreset
+            msg.detector = val
+            msg.blobXY = blobCoords
+            self.detection_pub.publish(msg)
+            if(self.debug):
+                rospy.loginfo_throttle(3, 'SC| Published detection status')
+
 
     def publishCaptureFeedback(self, pub:rospy.Publisher):
         pub.publish(Bool(True))
+        if(self.debug):
+            rospy.loginfo_throttle(3, 'SC| Published capture feedback')
     
     def convertPublishCompressedImage(self, pub:rospy.Publisher, cv_image):
         compressed_image_msg = CompressedImage()
@@ -256,6 +274,10 @@ class SoundcamROS(object):
                                                             msg.orientation.x,
                                                             msg.orientation.y,
                                                             msg.orientation.z)
+            if(self.debug):
+                rospy.loginfo_throttle(3, 'SC| Got robot pose: X:{0}, Y:{1}, Theta:{2}'.format(
+                    msg.position.x, msg.position.y, theta
+                ))
             return (msg.position.x, msg.position.y, theta)
         except Exception as e:
             return (0.0, 0.0, 90.0)
@@ -337,6 +359,8 @@ class SoundcamROS(object):
                 rospy.logerr('SC| Error taking snapshots: ', e)
                 return False
         self.publishCaptureFeedback(self.capture_pub)
+        if(self.debug):
+            rospy.loginfo_throttle(1, 'SC| Snapshot success!')
         return True
     
     ''' Save recorded stream and returns True/False'''
@@ -348,9 +372,13 @@ class SoundcamROS(object):
                 self.manualTrigger = False
                 self.utils.createVideoFromFrames(self._manual_frames_ls)
                 self.publishCaptureFeedback(self.capture_pub)
+                if(self.debug):
+                    rospy.loginfo_throttle(1, 'SC| Manual Recording success!')
                 return True
             except Exception as e:
                 rospy.logerr("SC| Error saving recording, ", e)
+                if(self.debug):
+                    rospy.logerr_throttle(1, 'SC| Auto Recording failure!')
                 return False
         else: # auto recording save
             self.recordTrigger = False
@@ -426,12 +454,17 @@ class SoundcamROS(object):
                 self._auto_tm_frames_ls.clear()
                 self._auto_audio_frames_ls.clear()
                 rospy.logerr('SC| Error AUTOMATICALLY saving streams: ', e)
+                if(self.debug):
+                    rospy.logerr_throttle(1, 'SC| Auto Recording failure!')
                 return False
+            if(self.debug):
+                rospy.loginfo_throttle(1, 'SC| Auto Recording success!')
             return True
 
     
     def serviceCB(self, req:SoundcamServiceRequest):
-        print("Incoming Service Call with params: ", req)
+        if(self.debug):
+            rospy.loginfo("Incoming Service Call with params: ", req)
         resp = SoundcamServiceResponse()
         resp.results = SoundcamServiceResponse.SUCCESS
         if(req.command_type == SoundcamServiceRequest.CMD_TYPE_CONFIG):
@@ -473,20 +506,24 @@ class SoundcamROS(object):
                                  SoundcamServiceRequest.ACOUSTIC_STREAM,
                                  SoundcamServiceRequest.THERMAL_STREAM, 
                                  SoundcamServiceRequest.OVERLAY_STREAM]):
-                        print('Stream type unknown: ', dstrm)
+                        if(self.debug):
+                            rospy.logerr('Stream type unknown: ', dstrm)
                         resp.results = SoundcamServiceResponse.FAIL
                     else:
                         self.streamType = dstrm
                         self.manualTrigger = True
-                        rospy.loginfo('Recording video: Type -> %i' % dstrm)
+                        if(self.debug):
+                            rospy.loginfo('Recording video: Type -> %i' % dstrm)
                 elif((req.command == SoundcamServiceRequest.STOP_RECORD)):
                     if(not self._saveRecording()):
                         resp.results = SoundcamServiceResponse.FAIL
-                    rospy.loginfo('Recording saved!')
+                    if(self.debug):
+                        rospy.loginfo('Recording saved!')
                 elif((req.command == SoundcamServiceRequest.CANCEL_RECORD)):
                     self.manualTrigger = False
                     self._manual_frames_ls.clear()
-                    rospy.loginfo('Recording cancelled!')
+                    if(self.debug):
+                        rospy.loginfo('Recording cancelled!')
                 elif(req.command == SoundcamServiceRequest.SNAPSHOT):
                     if(not self._takeSnapshot(int(req.op_command1))):
                         resp.results = SoundcamServiceResponse.FAIL
@@ -515,7 +552,11 @@ class SoundcamROS(object):
             except Exception as e:
                 rospy.logerr("Error occured! ", e)
                 resp.results = SoundcamServiceResponse.FAIL
-
+        if(self.debug):
+            if(resp.results == SoundcamServiceResponse.SUCCESS):
+                rospy.loginfo("SC| Service Call success!")
+            else:
+                rospy.logerr("SC| Service Call failure!")
         resp.ack.data = True
         return resp
     

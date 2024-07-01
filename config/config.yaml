@@ -2,6 +2,7 @@
 ip: '192.168.3.101'
 port: 6340
 protocol: 3
+driver_debug: False
 system_run: False #if False: turns off all visualizations & uses ROS publishers
 
 #Streaming parameters
@@ -51,6 +52,7 @@ overlayConfig: '1000' # [Acoustic, Spectrum, Audio, Thermal] -> only Acoustic im
 
 ## ROS PARAMETERS
 frame: 'soundcam'
+ros_debug: True
 auto_detect: True
 detection_xy_offset: 25  #offset for centering the detected blob - NOT USED
 mean_energy_thresh: 20.0
