@@ -22,6 +22,7 @@ add_message_files(
    SoundcamStatus.msg
    SoundcamDetection.msg
    Preset.msg
+   Test.msg
  )
 
 ## Generate services in the 'srv' folder
