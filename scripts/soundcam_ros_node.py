@@ -259,13 +259,13 @@ class SoundcamROS(object):
     -------------------------other METHODS
     '''
     def setPreset(self, preset:Preset):
-        return self.camera.updatePreset(mode=preset.scalingMode,
-                                        distance=preset.distance,
-                                        minFreq=preset.minFrequency,
-                                        maxFreq=preset.maxFrequency,
-                                        dynamic=preset.dynamic,
-                                        crest=preset.crest,
-                    maximum=preset.maximum if (preset.maximum > 0.0) else None)
+        return self.camera.updatePreset(mode=int(preset.scalingMode),
+                                        distance=int(preset.distance),
+                                        minFreq=int(preset.minFrequency),
+                                        maxFreq=int(preset.maxFrequency),
+                                        dynamic=float(preset.dynamic),
+                                        crest=float(preset.crest),
+                    maximum=float(preset.maximum) if (float(preset.maximum) > 0.0) else None)
                 
     def getRobotPose(self):
         try:
@@ -464,7 +464,31 @@ class SoundcamROS(object):
     
     def serviceCB(self, req:SoundcamServiceRequest):
         if(self.debug):
-            rospy.loginfo("Incoming Service Call with params: ", req)
+            rospy.loginfo("Incoming Service Call with the following params: ")
+            rospy.loginfo("\t Command Type: ", req.command_type)
+            rospy.loginfo("\t CaptureTime: ", req.captureTime)
+            rospy.loginfo("\t Preset: ")
+            rospy.loginfo("\t\t Scaling Mode: ", req.preset.scalingMode)
+            rospy.loginfo("\t\t Crest: ", req.preset.crest)
+            rospy.loginfo("\t\t Distance: ", req.preset.distance)
+            rospy.loginfo("\t\t Maximum: ", req.preset.maximum)
+            rospy.loginfo("\t\t Dynamic: ", req.preset.dynamic)
+            rospy.loginfo("\t\t Max. Frequency: ", req.preset.maxFrequency)
+            rospy.loginfo("\t\t Min. Frequency: ", req.preset.minFrequency)
+            rospy.loginfo("\t Media Type: ", req.mediaType)
+            rospy.loginfo("\t Command: ", req.command)
+            rospy.loginfo("\t\t Op. Cmd-1: ", req.op_command1)
+            rospy.loginfo("\t\t Op. Cmd-2: ", req.op_command2)
+            rospy.loginfo("\t\t Op. Cmd-3: ", req.op_command3)
+            try:
+                if(len(req.extras) > 0):
+                    rospy.loginfo("\t\t Extras: ")
+                    for kv in req.extras:
+                        dt:KeyValue = kv
+                        rospy.loginfo("\t\t\t Key: {}, Value: {}".format(dt.key, dt.value))
+            except Exception:
+                pass
+        
         resp = SoundcamServiceResponse()
         resp.results = SoundcamServiceResponse.SUCCESS
         if(req.command_type == SoundcamServiceRequest.CMD_TYPE_CONFIG):
@@ -478,7 +502,8 @@ class SoundcamROS(object):
                 # Get Extra Parameters
                 if(len(req.extras) > 0):
                     dt:KeyValue = req.extras[0]
-                    self.utils.prepareDirectory(int(dt.key), dt.value)
+                    if(dt.key != '' and dt.value != ''):
+                        self.utils.prepareDirectory(int(dt.key), dt.value)
                 #Configure camera preset
                 if(self.camera.isMeasuring()): #stop measurement if running
                     self.camera.stopMeasurement()

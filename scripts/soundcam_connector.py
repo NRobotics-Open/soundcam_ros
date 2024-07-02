@@ -383,6 +383,9 @@ class SoundCamConnector(object):
     def updatePreset(self, mode, distance, minFreq, maxFreq,
                      dynamic=3.1, crest=5.0, maximum=None):
         try:
+            #configure acoustic filter
+            self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
+                                          max=maximum, crest=crest)
             #Configure with WriteObjectReq request --- multiple
             query = self.protocol.ConfigureCamera(self.invokeId, 
                             distance, (minFreq, maxFreq), 
@@ -393,11 +396,12 @@ class SoundCamConnector(object):
             self.invokeId += 1
             query += self.protocol.setState(self.invokeId, 
                                             Device.DeviceStates(self.cfgObj['deviceState']))#set device state
+            #concatenate DataToSend
+            self.invokeId += 1
+            query += self.protocol.dataToSendConfig(self.invokeId, 
+                                                    dataToSend1=self.cfgObj['dataToSend1'],
+                                                    dataToSend2=self.cfgObj['dataToSend2'])
             self.sendData(query=query)
-
-            #configure acoustic filter
-            self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
-                                          max=maximum, crest=crest)
         except Exception as ex:
             print('Error Configuring device!', ex)
             return False
