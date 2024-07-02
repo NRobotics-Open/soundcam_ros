@@ -464,41 +464,42 @@ class SoundcamROS(object):
     
     def serviceCB(self, req:SoundcamServiceRequest):
         if(self.debug):
-            rospy.loginfo("Incoming Service Call with the following params: ")
-            rospy.loginfo("\t Command Type: ", req.command_type)
-            rospy.loginfo("\t CaptureTime: ", req.captureTime)
-            rospy.loginfo("\t Preset: ")
-            rospy.loginfo("\t\t Scaling Mode: ", req.preset.scalingMode)
-            rospy.loginfo("\t\t Crest: ", req.preset.crest)
-            rospy.loginfo("\t\t Distance: ", req.preset.distance)
-            rospy.loginfo("\t\t Maximum: ", req.preset.maximum)
-            rospy.loginfo("\t\t Dynamic: ", req.preset.dynamic)
-            rospy.loginfo("\t\t Max. Frequency: ", req.preset.maxFrequency)
-            rospy.loginfo("\t\t Min. Frequency: ", req.preset.minFrequency)
-            rospy.loginfo("\t Media Type: ", req.mediaType)
-            rospy.loginfo("\t Command: ", req.command)
-            rospy.loginfo("\t\t Op. Cmd-1: ", req.op_command1)
-            rospy.loginfo("\t\t Op. Cmd-2: ", req.op_command2)
-            rospy.loginfo("\t\t Op. Cmd-3: ", req.op_command3)
-            try:
-                if(len(req.extras) > 0):
-                    rospy.loginfo("\t\t Extras: ")
-                    for kv in req.extras:
-                        dt:KeyValue = kv
-                        rospy.loginfo("\t\t\t Key: {}, Value: {}".format(dt.key, dt.value))
-            except Exception:
-                pass
+            rospy.loginfo("Incoming Service Call ...")
+        #     rospy.loginfo("\t Command Type: ", req.command_type)
+        #     rospy.loginfo("\t CaptureTime: ", req.captureTime)
+        #     rospy.loginfo("\t Preset: ")
+        #     rospy.loginfo("\t\t Scaling Mode: ", req.preset.scalingMode)
+        #     rospy.loginfo("\t\t Crest: ", req.preset.crest)
+        #     rospy.loginfo("\t\t Distance: ", req.preset.distance)
+        #     rospy.loginfo("\t\t Maximum: ", req.preset.maximum)
+        #     rospy.loginfo("\t\t Dynamic: ", req.preset.dynamic)
+        #     rospy.loginfo("\t\t Max. Frequency: ", req.preset.maxFrequency)
+        #     rospy.loginfo("\t\t Min. Frequency: ", req.preset.minFrequency)
+        #     rospy.loginfo("\t Media Type: ", req.mediaType)
+        #     rospy.loginfo("\t Command: ", req.command)
+        #     rospy.loginfo("\t\t Op. Cmd-1: ", req.op_command1)
+        #     rospy.loginfo("\t\t Op. Cmd-2: ", req.op_command2)
+        #     rospy.loginfo("\t\t Op. Cmd-3: ", req.op_command3)
+        #     try:
+        #         if(len(req.extras) > 0):
+        #             rospy.loginfo("\t\t Extras: ")
+        #             for kv in req.extras:
+        #                 dt:KeyValue = kv
+        #                 rospy.loginfo("\t\t\t Key: {}, Value: {}".format(dt.key, dt.value))
+        #     except Exception:
+        #         pass
         
         resp = SoundcamServiceResponse()
         resp.results = SoundcamServiceResponse.SUCCESS
         if(req.command_type == SoundcamServiceRequest.CMD_TYPE_CONFIG):
             try:
                 self.curCaptureTime = req.captureTime if (req.captureTime > 0.0) else self.curCaptureTime
-                media = [int(x) for x in req.mediaType.split('|')]
-                if(SoundcamServiceRequest.ALL not in media):
-                    self.curMediaType = media
-                else:
-                    self.curMediaType = SoundcamServiceRequest.ALL
+                if(req.mediaType != ''):
+                    media = [int(x) for x in req.mediaType.split('|')]
+                    if(SoundcamServiceRequest.ALL not in media):
+                        self.curMediaType = media
+                    else:
+                        self.curMediaType = SoundcamServiceRequest.ALL
                 # Get Extra Parameters
                 if(len(req.extras) > 0):
                     dt:KeyValue = req.extras[0]

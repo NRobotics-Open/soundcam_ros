@@ -31,7 +31,6 @@ from utils import SoundUtils as SU, SoundUtilsProxy as SUP, SoundUtilsManager, \
 
 #http stream
 #from soundcam_streamer import StreamingServer, StreamingOutput, StreamingHandler
-    
 
 FIRMWARE_VERSION = '2.8.3.0'
 CONNECT_TIMEOUT = 25 #seconds
@@ -362,6 +361,7 @@ class SoundCamConnector(object):
             query += self.protocol.dataToSendConfig(self.invokeId, 
                                                     dataToSend1=self.cfgObj['dataToSend1'],
                                                     dataToSend2=self.cfgObj['dataToSend2'])
+            self.invokeId += 1
             if(getQuery):
                 return query
             self.sendData(query=query)
@@ -383,6 +383,7 @@ class SoundCamConnector(object):
     def updatePreset(self, mode, distance, minFreq, maxFreq,
                      dynamic=3.1, crest=5.0, maximum=None):
         try:
+            time.sleep(1.0)
             #configure acoustic filter
             self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
                                           max=maximum, crest=crest)
@@ -401,7 +402,9 @@ class SoundCamConnector(object):
             query += self.protocol.dataToSendConfig(self.invokeId, 
                                                     dataToSend1=self.cfgObj['dataToSend1'],
                                                     dataToSend2=self.cfgObj['dataToSend2'])
+            self.invokeId += 1
             self.sendData(query=query)
+            self.scamUtils.resetBuffers()
         except Exception as ex:
             print('Error Configuring device!', ex)
             return False
@@ -413,11 +416,11 @@ class SoundCamConnector(object):
             self.sendData(query=query)
             query = self.protocol.dataToSendConfig(self.invokeId)
             self.sendData(query=query) """
-            print('Starting measurement ...')
             #query = self.protocol.writeVidFPS(self.invokeId, self.cfgObj['videoFPS'])
             query = self.protocol.startStopProcedure(self.invokeId) #start procedure
             self.sendData(query=query)
             self.recvStream = True
+            print('Starting measurement ...')
         except Exception as ex:
             print('Error Starting Measurement!')
             return False
@@ -433,6 +436,7 @@ class SoundCamConnector(object):
             self.sendData(query=query)
             self.protocol.unsetStreamFlags()
             self.recvStream = False
+            print('Stopped!')
         except Exception as ex:
             print('Error Stopping Measurement: ', ex)
             return False
@@ -442,6 +446,7 @@ class SoundCamConnector(object):
         return self.protocol.isStreaming()
     
     '''Packs the continuous incoming stream to the generic Queue'''
+    
     def receiveCyclic(self):
         print('Cyclic thread started ...')
         start_t = time.time()
@@ -526,6 +531,8 @@ class SoundCamConnector(object):
             #read queue and filter
             if(not globalQ.empty()):
                 if(not protocol.p_hasInitialStatus()):
+                    if(self.debug):
+                        print('Clearing Q: camera not initialized!')
                     self._clearQueue(globalQ)
                 # if(globalQ.qsize() > 50):
                 #     print('Global Queue Size: ', globalQ.qsize())
@@ -773,6 +780,8 @@ class SoundCamConnector(object):
                             canPopfromQ = False
                         else:
                             canPopfromQ = True
+            else:
+                pass
                          
 
     '''Decodes and Publishes Video data'''

@@ -556,12 +556,14 @@ class CameraProtocol(object):
 
                 if(self.debug and (unpacked is not None)):
                     #print('Decoding protocol version %i message' % self.pcProtocolVersion)
-                    print('Unpacked: ', unpacked)
+                    if(self.debug):
+                        print('Unpacked: ', unpacked)
             self.decode(unpackedLs=unpacked)
     
     def decode(self, unpackedLs:list)->None:
         if(len(unpackedLs) == 0):
-            print('Nothing to decode')
+            if(self.debug):
+                print('Nothing to decode')
             return None
         else: #iterative decoding and storage
             for unpacked in unpackedLs:
@@ -666,7 +668,8 @@ class CameraProtocol(object):
     def processError(self, data:GenericResponse):
         for e in Device.ErrorCodes:
             if(e.value == data.Status):
-                print('Error reported is %s. \nCode: %i !!' % (e.name, e.value))
+                if(self.debug):
+                    print('Error reported is %s. \nCode: %i !!' % (e.name, e.value))
     
     def isStreaming(self)->bool:
         if(self.stateProcStatus[DataMessages.Status.PrepareStateRes.value] and 
