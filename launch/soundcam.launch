@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<launch>
+  <node name="soundcam_node" pkg="soundcam_ros" type="soundcam_ros_node.py" />
+</launch>
