@@ -2,6 +2,9 @@
 
 import rospy, time, atexit, os, sys, math
 from config import cfgContext
+import matplotlib
+if(not cfgContext['system_run']):
+    matplotlib.use('Agg')
 from soundcam_connector import SoundCamConnector
 from jsk_recognition_msgs.msg import Spectrum
 from audio_common_msgs.msg import AudioDataStamped, AudioInfo
