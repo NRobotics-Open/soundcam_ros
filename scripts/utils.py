@@ -1,5 +1,4 @@
 import numpy as np
-from acoustics.decibel import dbmean, dbsum
 import matplotlib.pyplot as plt
 import wave, time, math, pickle
 from multiprocessing.managers import BaseProxy, BaseManager
@@ -245,7 +244,7 @@ class SoundUtils():
             bin = arr[s, : ] # (1023, )
             for a in iter: #iterate over the content of bins
                 if((a >= self.minFreq) and (a <= self.maxFreq)): #filter by freq range
-                    energies[iter.index] = dbsum([energies[iter.index], bin[iter.index]])
+                    energies[iter.index] = self.dbsum([energies[iter.index], bin[iter.index]])
         #self.sems[self.BufferTypes.ENERGY.value].acquire()
         newenergyBuffer = np.roll(self.energyBuffer, -1023, axis=0)
         energies.shape = -1, 1
@@ -288,8 +287,8 @@ class SoundUtils():
     
     def printMetrics(self, data:np.array):
         print('Metrics')
-        print('DB Sum: ', dbsum(data))
-        print('Mean: ', dbmean(data))
+        print('DB Sum: ', self.dbsum(data))
+        print('Mean: ', self.dbmean(data))
     
     def writeOutVar(self, filename:str, uselocal=True):
         with open(filename + '.pkl', 'wb') as f:
@@ -306,6 +305,30 @@ class SoundUtils():
         self.specLocalBuffer[:, :] = 0.0
         self.specGlobalBuffer[:, :] = 0.0
         self.energyBuffer[:, :] = 0.0
+    
+    def dbsum(self, levels, axis=None):
+        """Energetic summation of levels.
+
+        :param levels: Sequence of levels.
+        :param axis: Axis over which to perform the operation.
+
+        .. math:: L_{sum} = 10 \\log_{10}{\\sum_{i=0}^n{10^{L/10}}}
+
+        """
+        levels = np.asanyarray(levels)
+        return 10.0 * np.log10((10.0**(levels / 10.0)).sum(axis=axis))
+
+    def dbmean(self, levels, axis=None):
+        """Energetic average of levels.
+
+        :param levels: Sequence of levels.
+        :param axis: Axis over which to perform the operation.
+
+        .. math:: L_{mean} = 10 \\log_{10}{\\frac{1}{n}\\sum_{i=0}^n{10^{L/10}}}
+
+        """
+        levels = np.asanyarray(levels)
+        return 10.0 * np.log10((10.0**(levels / 10.0)).mean(axis=axis))
 
 
 class SoundUtilsProxy(BaseProxy):
