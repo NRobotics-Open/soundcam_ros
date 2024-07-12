@@ -37,7 +37,7 @@ visualizeVideo: False
 visualizeThermal: False
 visualizeAudio: False
 
-visualizeAcVideo: True
+visualizeAcVideo: False
 minimum_db: 0
 maximum_db: 120
 
@@ -46,7 +46,7 @@ minimum_spdb: -120
 maximum_spdb: 120
 
 #Post-processing
-visualizeOverlay: True  #forces(sets) -> visualizeVideo
+visualizeOverlay: False  #forces(sets) -> visualizeVideo
 overlayConfig: '1000' # [Acoustic, Spectrum, Audio, Thermal] -> only Acoustic impl'td
 
 

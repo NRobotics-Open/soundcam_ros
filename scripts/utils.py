@@ -694,3 +694,15 @@ class ROSLayerUtils(object):
             sf.write(os.path.join(self.mediaDir, self.curAud), audio_data, samplerate)
         else:
             sf.write(output_file, audio_data, samplerate)
+    
+    def imageOverlay(self, img_arr1:np.array, img_arr2:np.array):
+        #print(acFrame.shape)
+        img_arr1 = cv2.cvtColor(img_arr1, cv2.COLOR_GRAY2BGRA)
+        m2 = img_arr2[:,:,3]
+
+        m2i = cv2.bitwise_not(m2)
+        alpha2i = cv2.cvtColor(m2i, cv2.COLOR_GRAY2BGRA)/255.0
+
+        # Perform blending and limit pixel values to 0-255 (convert to 8-bit)
+        b1i = cv2.convertScaleAbs(img_arr2*(1-alpha2i) + img_arr1*alpha2i)
+        return b1i
