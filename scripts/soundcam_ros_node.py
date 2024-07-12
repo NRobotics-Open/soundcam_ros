@@ -156,7 +156,7 @@ class SoundcamROS(object):
             rospy.loginfo_throttle(3, 'SC| Sent status msg')
 
     def videoPublishing(self, pub:rospy.Publisher, fn, streamType):
-        rate = rospy.Rate(50)
+        rate = rospy.Rate(15)
         while(not rospy.is_shutdown() and self.canRun):
             if(not self.pauseContinuous):
                 img_arr:np.array = fn()
@@ -188,7 +188,7 @@ class SoundcamROS(object):
             rate.sleep()
     
     def videoPublishingPostProc(self, pub:rospy.Publisher, fn1, fn2, streamType):
-        rate = rospy.Rate(50)
+        rate = rospy.Rate(15)
         p_img_arr1 = None
         p_img_arr2 = None
         while(not rospy.is_shutdown() and self.canRun):
@@ -224,7 +224,7 @@ class SoundcamROS(object):
             rate.sleep()
     
     def audioPublishing(self, pub:rospy.Publisher, pubinfo:rospy.Publisher, fn, fninfo):
-        rate = rospy.Rate(80)
+        rate = rospy.Rate(30)
         msg = AudioDataStamped()
         msg.header.frame_id = self.cfg['frame']
         msginfo = AudioInfo()
@@ -236,8 +236,11 @@ class SoundcamROS(object):
                 self._auto_audio_frames_ls.append(aud_arr)
             if(pub.get_num_connections() > 0):
                 msg.header.stamp = rospy.Time.now()
-                if(aud_arr):
-                    msg.audio.data = aud_arr
+                if(aud_arr is not None):
+                    aud_arr = aud_arr/ np.max(aud_arr)
+                    aud_arr = 255 * aud_arr
+                    aud_arr = aud_arr.astype(np.uint8)
+                    msg.audio.data = aud_arr.flatten().tolist()
                     pub.publish(msg)
                     if(self.debug):
                         rospy.loginfo_throttle(3, 'SC| Streaming audio')
@@ -257,13 +260,15 @@ class SoundcamROS(object):
             rate.sleep()
 
     def spectrumPublishing(self, pub:rospy.Publisher, fn):
-        rate = rospy.Rate(40)
+        rate = rospy.Rate(20)
         msg = Spectrum()
         msg.header.frame_id = self.cfg['frame']
         while(not rospy.is_shutdown() and self.canRun):
             if(pub.get_num_connections() > 0):
                 msg.header.stamp = rospy.Time.now()
-                (msg.frequency, msg.amplitude) = fn()
+                (frequency, amplitude) = fn()
+                msg.frequency = frequency.flatten().tolist()
+                msg.amplitude = amplitude.flatten().tolist()
                 pub.publish(msg)
                 if(self.debug):
                     rospy.loginfo_throttle(5, 'SC| Streaming spectrum data')
