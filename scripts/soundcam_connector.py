@@ -190,7 +190,8 @@ class SoundCamConnector(object):
         self.threads.append(Thread(target=self.receiveCyclic, daemon=True))
         self.threads.append(Thread(target=self.streamFilter))
         # Start the memory monitor in the main process
-        self.threads.append(Thread(target=self.monitor_memory, daemon=True))
+        if(self.debug):
+            self.threads.append(Thread(target=self.monitor_memory, daemon=True))
         for th in self.threads:
             th.start()
         
