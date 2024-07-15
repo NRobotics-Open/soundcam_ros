@@ -135,12 +135,12 @@ class SoundCamConnector(object):
         #     self.cfgObj['visualizeVideo'] = True
         
         if(self.cfgObj['processVideo']):
-            self.vidQ = Queue(maxsize=50)
+            self.vidQ = Queue(maxsize=30)
             self.queues.append(self.vidQ)
             self.threads.append(Thread(target=self.processVideo, daemon=True))
             #self.processes.append(Process(target=self.processVideo, args=(self.vidQ, self.processData), name='vidProc'))
         if(self.cfgObj['processAcVideo']):
-            self.acVidQ = Queue(maxsize=50)
+            self.acVidQ = Queue(maxsize=30)
             self.queues.append(self.acVidQ)
 
             self.ac_semaphore = Semaphore(1)
@@ -149,7 +149,7 @@ class SoundCamConnector(object):
             #                               args=(self.acVidQ, self.processData, 
             #                                     self.scamUtils, self.ac_semaphore)))
         if(self.cfgObj['processSpectrum']):
-            self.specQ = Queue(maxsize=50)
+            self.specQ = Queue(maxsize=30)
             self.queues.append(self.specQ)
             self.spec_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processSpectrum, daemon=True))
@@ -157,7 +157,7 @@ class SoundCamConnector(object):
             #                               args=(self.specQ, self.processData, 
             #                                     self.scamUtils, self.spec_semaphore)))
         if(self.cfgObj['processAudio']):
-            self.audQ = Queue(maxsize=50)
+            self.audQ = Queue(maxsize=30)
             self.queues.append(self.audQ)
             self.aud_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processAudio, daemon=True))
@@ -165,7 +165,7 @@ class SoundCamConnector(object):
             #                               args=(self.audQ, self.processData, 
             #                                     self.scamUtils, self.aud_semaphore)))
         if(self.cfgObj['processThermal']):
-            self.thermalQ = Queue(maxsize=50)
+            self.thermalQ = Queue(maxsize=30)
             self.queues.append(self.thermalQ)
             self.threads.append(Thread(target=self.processThermalVideo, daemon=True))
             # self.processes.append(Process(target=self.processThermalVideo, 
@@ -185,7 +185,7 @@ class SoundCamConnector(object):
         #self.protocol = CP(protocol=self.cfgObj['protocol'], debug=self.debug)
 
         #start threads
-        self.globalQ = Queue()
+        self.globalQ = Queue(maxsize=65)
         self.queues.append(self.globalQ)
         self.threads.append(Thread(target=self.receiveCyclic, daemon=True))
         self.threads.append(Thread(target=self.streamFilter))

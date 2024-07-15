@@ -706,3 +706,4 @@ class ROSLayerUtils(object):
         # Perform blending and limit pixel values to 0-255 (convert to 8-bit)
         b1i = cv2.convertScaleAbs(img_arr2*(1-alpha2i) + img_arr1*alpha2i)
         return b1i
+        
