@@ -21,7 +21,7 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from soundcam_protocol import CommandCodes, DataMessages, MDDataMessage, Device, \
     DataObjects, \
-    CameraProtocol as CP, CameraProtocolProxy as CPP, CameraProtocolManager
+    CameraProtocol, CameraProtocolProxy, CameraProtocolManager
 import multiprocessing
 from multiprocessing import Process, Semaphore
 from queue import Empty, Queue
@@ -113,6 +113,13 @@ class SoundCamConnector(object):
         self.queues = list()
         self.qDict = dict()
 
+        #media Q setup
+        self.vidQ = None
+        self.acVidQ = None
+        self.specQ = None
+        self.audQ = None
+        self.thermalQ = None
+
         #post-processing setup
         self.overlayBA = bitarray(self.cfgObj['overlayConfig'])
         self.proc_vidBW = Queue(maxsize=3)
@@ -142,7 +149,6 @@ class SoundCamConnector(object):
         if(self.cfgObj['processAcVideo']):
             self.acVidQ = Queue(maxsize=30)
             self.queues.append(self.acVidQ)
-
             self.ac_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processAcVideo, daemon=True))
             # self.processes.append(Process(target=self.processAcVideo, 
@@ -182,7 +188,7 @@ class SoundCamConnector(object):
         self.protocmanager = CameraProtocolManager()
         self.protocmanager.start()
         self.protocol = self.protocmanager.CameraProtocol(protocol=self.cfgObj['protocol'], debug=self.debug)
-        #self.protocol = CP(protocol=self.cfgObj['protocol'], debug=self.debug)
+        #self.protocol = CameraProtocol(protocol=self.cfgObj['protocol'], debug=self.debug)
 
         #start threads
         self.globalQ = Queue(maxsize=65)
@@ -284,6 +290,16 @@ class SoundCamConnector(object):
             try:
                 q.get_nowait()
             except Exception:
+                pass
+    
+    def _addQueue(self, q:Queue, data:bytes, cast=True):
+        if(q is not None):
+            try:
+                if(cast):
+                    q.put(io.BytesIO(data), block=False)
+                else:
+                    q.put(data, block=False)
+            except:
                 pass
 
     def disconnect(self):
@@ -496,6 +512,7 @@ class SoundCamConnector(object):
                     res = self.sock.recv(self.bufSize)
                     if(res):
                         if(self.recvStream):
+                            #self._addQueue(self.globalQ, res, cast=False)
                             self.globalQ.put(res)
                         else: #if not streaming
                             try:
@@ -523,6 +540,22 @@ class SoundCamConnector(object):
             else:
                 #print('Awaiting socket connnection ...')
                 time.sleep(0.1)
+
+    def _routeData(self, curId, curBf, rawQ=None):
+        if curId == DataObjects.Ids.AcousticVideoData.value:
+            self._addQueue(self.acVidQ, curBf)
+        elif curId == DataObjects.Ids.VideoData.value:
+            self._addQueue(self.vidQ, curBf)
+        elif curId == DataObjects.Ids.SpectrumData.value:
+            self._addQueue(self.specQ, curBf)
+        elif curId == DataObjects.Ids.AudioData.value:
+            self._addQueue(self.audQ, curBf)
+        elif curId == DataObjects.Ids.ThermalVideoData.value:
+            self._addQueue(self.thermalQ, curBf)
+        elif curId == DataObjects.Ids.RawData.value and rawQ is not None:
+            self._addQueue(rawQ, curBf)
+        elif curId == DataObjects.Ids.CommonStatus.value:
+            pass
         
     '''Filters the generic Deque to the corresponding Deques based on the type'''
     def streamFilter(self):
@@ -536,27 +569,7 @@ class SoundCamConnector(object):
         remainingLen:int = 0
         
         #get queues
-        #globalQ = None
-        #vidQ = None
-        #acVidQ = None
-        #specQ = None
-        #audQ = None
-        #thermalQ = None
         rawQ = None
-        # for k,v in qDict.items():
-        #     # if (k == SoundCamConnector.DTypes.GLOBAL.name):
-        #     #     globalQ:Queue = v
-        #     # elif(k == SoundCamConnector.DTypes.VID.name):
-        #     #     vidQ:Queue = v
-        #     # elif(k == SoundCamConnector.DTypes.ACOUSTIC_VID.name):
-        #     #     acVidQ:Queue = v
-        #     # if(k == SoundCamConnector.DTypes.SPECTRUM.name):
-        #     #     specQ:Queue = v
-        #     # if(k == SoundCamConnector.DTypes.AUDIO.name):
-        #     #     audQ:Queue = v
-        #     # if(k == SoundCamConnector.DTypes.THERMAL.name):
-        #     #     thermalQ:Queue = v
-        #     pass
 
                   
         dmsg:MDDataMessage = None
@@ -575,12 +588,13 @@ class SoundCamConnector(object):
                 
                 if(canPopfromQ):
                     #print('Popping from Queue ...')
-                    inObj = self.globalQ.get()
+                    try:
+                        inObj = self.globalQ.get_nowait()
+                    except Empty:
+                        continue
                     sz = len(inObj)
                     if(canPrintLen and (sz == self.bufSize)):
-                        #print(inObj[:36]) #got header
                         isHdrPkt = True
-                        # cnt += 1
                     
                     if((sz < self.bufSize) and not isHdrPkt):
                         canPrintLen = True
@@ -601,22 +615,7 @@ class SoundCamConnector(object):
                         curBf += rd
                         if(len(rd) == remainingLen):
                             #print('Appending to corresponding deque ...')
-                            if(curId == DataObjects.Ids.AcousticVideoData.value):
-                                self.acVidQ.put(io.BytesIO(curBf)) #push on queue
-                            elif(curId == DataObjects.Ids.VideoData.value):
-                                self.vidQ.put(io.BytesIO(curBf))
-                            elif(curId == DataObjects.Ids.SpectrumData.value):
-                                self.specQ.put(io.BytesIO(curBf))
-                            elif(curId == DataObjects.Ids.AudioData.value):
-                                self.audQ.put(io.BytesIO(curBf))
-                            elif(curId == DataObjects.Ids.ThermalVideoData.value):
-                                self.thermalQ.put(io.BytesIO(curBf))
-                            elif(curId == DataObjects.Ids.RawData.value):
-                                if(rawQ is not None):
-                                    rawQ.put(io.BytesIO(curBf))
-                            elif(curId == DataObjects.Ids.CommonStatus.value):
-                                #TODO: update camera status here
-                                pass
+                            self._routeData(curId=curId, curBf=curBf)
 
                             #reset params
                             curId = 0
@@ -690,7 +689,7 @@ class SoundCamConnector(object):
                                 #print('Got Acoustic-Video data')
                                 curBf = data.read(dobj.Length)
                                 if(len(curBf) == dobj.Length):
-                                    self.acVidQ.put(io.BytesIO(curBf)) #push on q
+                                    self._addQueue(self.acVidQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
@@ -702,7 +701,7 @@ class SoundCamConnector(object):
                                 #print('Got Video data')
                                 curBf = data.read(dobj.Length)
                                 if(len(curBf) == dobj.Length):
-                                    self.vidQ.put(io.BytesIO(curBf))
+                                    self._addQueue(self.vidQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
@@ -714,8 +713,7 @@ class SoundCamConnector(object):
                                 #print('Got Spectrum data')
                                 curBf = data.read(dobj.Length)
                                 if(len(curBf) == dobj.Length):
-                                    if(self.specQ is not None):
-                                        self.specQ.put(io.BytesIO(curBf)) #push on deque
+                                    self._addQueue(self.specQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
@@ -727,7 +725,7 @@ class SoundCamConnector(object):
                                 #print('Got Audio data')
                                 curBf = data.read(dobj.Length)
                                 if(len(curBf) == dobj.Length):
-                                    self.audQ.put(io.BytesIO(curBf)) #push on deque
+                                    self._addQueue(self.audQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
@@ -739,8 +737,7 @@ class SoundCamConnector(object):
                                 #print('Got Raw data')
                                 curBf = data.read(dobj.Length)
                                 if(len(curBf) == dobj.Length):
-                                    if(rawQ is not None):
-                                        rawQ.put(io.BytesIO(curBf)) #push on deque
+                                    self._addQueue(rawQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
@@ -752,7 +749,7 @@ class SoundCamConnector(object):
                                 #print('Got Thermal-Video data')
                                 curBf = data.read(dobj.Length)
                                 if(len(curBf) == dobj.Length):
-                                    self.thermalQ.put(io.BytesIO(curBf)) #push on deque
+                                    self._addQueue(self.thermalQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
@@ -764,7 +761,8 @@ class SoundCamConnector(object):
                                 print('Got CommonStatus data')
                                 curBf = data.read(dobj.Length)
                                 if(len(curBf) == dobj.Length): #TODO: update camera status
-                                    print(data.read(dobj.Length))
+                                    #print(data.read(dobj.Length))
+                                    pass
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
@@ -801,7 +799,6 @@ class SoundCamConnector(object):
                             canPopfromQ = True
             else:
                 pass
-                         
 
     '''Decodes and Publishes Video data'''
     def processVideo(self):
@@ -849,7 +846,7 @@ class SoundCamConnector(object):
             except Empty:
                 continue
             except Exception as e:
-                print(f"Error in process {e}")
+                print(f"Error in video process {e}")
                 break
 
     '''Decodes and Publishes Acoustic Video data'''
@@ -860,6 +857,7 @@ class SoundCamConnector(object):
         hits = 0
         while(self.processData.is_set()):
             try:
+                #print('Here 0', self.acVidQ.qsize())
                 raw = self.acVidQ.get(timeout=0.1)
                 if(raw is None):
                     continue
@@ -885,7 +883,7 @@ class SoundCamConnector(object):
             except Empty:
                 continue
             except Exception as e:
-                print(f"Error in process {e}")
+                print(f"Error in acoustic process {e}")
                 break
 
     '''Decodes and Publishes Spectrum data'''
@@ -958,7 +956,7 @@ class SoundCamConnector(object):
             except Empty:
                 continue
             except Exception as e:
-                print(f"Error in process {e}")
+                print(f"Error in spectrum process {e}")
                 break
 
     '''Decodes and Publishes Audio data'''
