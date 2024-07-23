@@ -687,7 +687,7 @@ class SoundCamConnector(object):
                                     
                             curBf, readPos, readsz = self._readBytes(data, readPos, dobj.Length)
                             if(dobj.Id == DataObjects.Ids.AcousticVideoData.value):
-                                print('Got Acoustic-Video data')
+                                #print('Got Acoustic-Video data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(self.acVidQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
@@ -699,7 +699,7 @@ class SoundCamConnector(object):
                                     break
 
                             elif(dobj.Id == DataObjects.Ids.VideoData.value):
-                                print('Got Video data')
+                                #print('Got Video data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(self.vidQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
@@ -711,7 +711,7 @@ class SoundCamConnector(object):
                                     break
                             
                             elif(dobj.Id == DataObjects.Ids.SpectrumData.value):
-                                print('Got Spectrum data')
+                                #print('Got Spectrum data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(self.specQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
@@ -723,7 +723,7 @@ class SoundCamConnector(object):
                                     break
 
                             elif(dobj.Id == DataObjects.Ids.AudioData.value):
-                                print('Got Audio data')
+                                #print('Got Audio data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(self.audQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
@@ -735,7 +735,7 @@ class SoundCamConnector(object):
                                     break
 
                             elif(dobj.Id == DataObjects.Ids.RawData.value):
-                                print('Got Raw data')
+                                #print('Got Raw data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(rawQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
@@ -747,7 +747,7 @@ class SoundCamConnector(object):
                                     break
 
                             elif(dobj.Id == DataObjects.Ids.ThermalVideoData.value):
-                                print('Got Thermal-Video data')
+                                #print('Got Thermal-Video data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(self.thermalQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
@@ -759,7 +759,7 @@ class SoundCamConnector(object):
                                     break
                             
                             elif(dobj.Id == DataObjects.Ids.CommonStatus.value):
-                                print('Got CommonStatus data')
+                                #print('Got CommonStatus data')
                                 if(readsz == dobj.Length): #TODO: update camera status
                                     #print(data.read(dobj.Length))
                                     pass
