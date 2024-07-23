@@ -707,63 +707,70 @@ class CameraProtocol(object):
             return None
     
     ''' Unpacks, Decodes the received video bytes '''
-    def unpackDecodeVideoData(self, data:io.BytesIO):
+    def unpackDecodeVideoData(self, data:bytes):
         try:
             dstr = '<Q2H'
-            unpack = struct.unpack(dstr, data.read(struct.calcsize(dstr)))
+            dssize = struct.calcsize(dstr)
+            unpack = struct.unpack(dstr, data[:dssize])
             # vid = DataObjects.MDVideoData._make()
             # datasize = vid.VResolution * vid.HResolution
             datasize = unpack[1] * unpack[2]
             vidframe:np.array = np.array(
-                        struct.unpack('<' + str(datasize) +'B', data.read(-1)), dtype=np.uint8).reshape(unpack[2], unpack[1])
+                        struct.unpack('<' + str(datasize) +'B', data[dssize:]), dtype=np.uint8).reshape(unpack[2], unpack[1])
             return (unpack, vidframe)
         except Exception as ex:
-            print(ex)
+            print('Error in Video decode: ', ex)
             return (None, None)
     
     ''' Unpacks, Decodes the received acoustic video bytes '''
-    def unpackDecodeAcousticVideoData(self, data:io.BytesIO):
+    def unpackDecodeAcousticVideoData(self, data:bytes):
         try:
             dstr = '<Q6L'
             dssize = struct.calcsize(dstr)
-            unpack = struct.unpack(dstr, data.read(dssize))
+            unpack = struct.unpack(dstr, data[:dssize])
             #acvid = DataObjects.MDAcousticImageData._make()
             #data.seek(dssize)
             frameData:np.array = np.array(
-                struct.unpack('<3072f', data.read(-1)), dtype=np.float32).reshape(48, 64)
+                struct.unpack('<3072f', data[dssize:]), dtype=np.float32).reshape(48, 64)
             return (unpack, frameData)
         except Exception as ex:
             print(ex)
             return (None, None)
     
     ''' Unpacks, Decodes the received spectrum bytes '''
-    def unpackDecodeSpectrumData(self, data:io.BytesIO):
+    def unpackDecodeSpectrumData(self, data:bytes):
         try:
             dstr = '<QfH2L'
             dssize = struct.calcsize(dstr)
-            spc1 = struct.unpack(dstr, data.read(dssize))
+            spc1 = struct.unpack(dstr, data[:dssize])
+            
             data_global:np.array = np.array(
-                struct.unpack('<1024f', data.read(4096)), dtype=np.float32)
-            #data_global[np.where(np.isinf(data_global))] = 0.0
+                struct.unpack('<1024f', data[dssize: dssize + 4096]), dtype=np.float32)
+            
+            dssize += 4096
             data_local:np.array = np.array(
-                struct.unpack('<1024f', data.read(4096)), dtype=np.float32)
+                struct.unpack('<1024f', data[dssize: dssize + 4096]), dtype=np.float32)
             #data_local[np.where(np.isinf(data_local))] = 0.0
             dstr = '4f'
-            spc2 = struct.unpack(dstr, data.read(dssize))
+            dssize += 4096
+            spc2 = struct.unpack(dstr, data[dssize:])
             return (spc1, spc2, data_global[1:], data_local[1:])
         except Exception as ex:
-            print(ex)
+            print('Error in Spectrum decode: ', ex)
             return (None, None, None, None)
     
     ''' Unpacks, Decodes the received audio bytes '''
-    def unpackDecodeAudioData(self, data:io.BytesIO):
+    def unpackDecodeAudioData(self, data:bytes):
         try:
             dstr = '<Q2h'
-            aud1 = struct.unpack(dstr, data.read(struct.calcsize(dstr)))
-            data_plus = np.array(struct.unpack('<2048i', data.read(8192)), dtype=np.int32)
-            data_minus = np.array(struct.unpack('<2048i', data.read(8192)), dtype=np.int32)
+            dssize = struct.calcsize(dstr)
+            aud1 = struct.unpack(dstr, data[:dssize])
+            data_plus = np.array(struct.unpack('<2048i', data[dssize: dssize + 8192]), dtype=np.int32)
+            dssize += 8192
+            data_minus = np.array(struct.unpack('<2048i', data[dssize: dssize + 8192]), dtype=np.int32)
             dstr = '<dH2L'
-            aud2 = struct.unpack(dstr, data.read(-1))
+            dssize += 8192
+            aud2 = struct.unpack(dstr, data[dssize:])
             #audioData = data_plus + data_minus
             return (aud1, aud2, data_plus, data_minus)
         except Exception as ex:
@@ -772,6 +779,7 @@ class CameraProtocol(object):
     
     ''' Unpacks, Decodes the received raw bytes '''
     def unpackDecodeRawData(self, response:bytes):
+        #TODO: Write the decoding process well
         if(response is None):
             return
         dta_len = int.from_bytes(response[4:8], byteorder='little')
@@ -793,16 +801,16 @@ class CameraProtocol(object):
         Thermal image data: One U16 per pixel, line by line from left to right and top to bottom,
         each U16 value indicates the temperature in 0.01K.
     '''
-    def unpackDecodeThermalVideoData(self, data:io.BytesIO):
+    def unpackDecodeThermalVideoData(self, data:bytes):
         try:
             dstr = '<Q3H'
             dssize = struct.calcsize(dstr)
             #hdr = DataObjects.MDThermalVideoData._make(struct.unpack(dstr, data.read(dssize)))
-            hdr = struct.unpack(dstr, data.read(dssize))
+            hdr = struct.unpack(dstr, data[:dssize])
             datasize = hdr[2] * hdr[1]
-            data.seek(640 + dssize) #skipping header TODO: Get Header info from CAE
+            dssize += 640 #skipping header TODO: Get Header info from CAE
             vidframe:np.array = np.array(
-                         struct.unpack('<' + str(datasize) +'H', data.read(-1)), dtype=np.uint16).reshape(hdr[2], hdr[1])
+                         struct.unpack('<' + str(datasize) +'H', data[dssize:]), dtype=np.uint16).reshape(hdr[2], hdr[1])
             if(hdr[3] == DataObjects.ThermalDatatype.TelemetryEnabledTLinearEnabledRaw14Res0_1K.value):
                 vidframe = (vidframe/ 10.0)
                 vidframe -= 273.15
@@ -1011,19 +1019,19 @@ class CameraProtocolProxy(BaseProxy):
     def unpackDataObjectHeader(self, response:bytes):
         return self._callmethod('unpackDataObjectHeader', (response,))
     
-    def unpackDecodeVideoData(self, data:io.BytesIO):
+    def unpackDecodeVideoData(self, data:bytes):
         return self._callmethod('unpackDecodeVideoData', (data,))
     
-    def unpackDecodeAcousticVideoData(self, data:io.BytesIO):
+    def unpackDecodeAcousticVideoData(self, data:bytes):
         return self._callmethod('unpackDecodeAcousticVideoData', (data,))
     
-    def unpackDecodeSpectrumData(self, data:io.BytesIO):
+    def unpackDecodeSpectrumData(self, data:bytes):
         return self._callmethod('unpackDecodeSpectrumData', (data,))
     
-    def unpackDecodeAudioData(self, data:io.BytesIO):
+    def unpackDecodeAudioData(self, data:bytes):
         return self._callmethod('unpackDecodeAudioData', (data,))
     
-    def unpackDecodeThermalVideoData(self, data:io.BytesIO):
+    def unpackDecodeThermalVideoData(self, data:bytes):
         return self._callmethod('unpackDecodeThermalVideoData', (data,))
     
     def writeDistance(self, invokeId, distance:int):

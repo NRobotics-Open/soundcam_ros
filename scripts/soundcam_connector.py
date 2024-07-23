@@ -292,13 +292,10 @@ class SoundCamConnector(object):
             except Exception:
                 pass
     
-    def _addQueue(self, q:Queue, data:bytes, cast=True):
+    def _addQueue(self, q:Queue, data:bytes):
         if(q is not None):
             try:
-                if(cast):
-                    q.put(io.BytesIO(data), block=False)
-                else:
-                    q.put(data, block=False)
+                q.put(data, block=False)
             except:
                 pass
 
@@ -582,22 +579,26 @@ class SoundCamConnector(object):
         #get queues
         rawQ = None
 
+        debug = False
+
                   
         dmsg:MDDataMessage = None
         isHdrPkt = False
         canPrintLen = True
+
         while(self.canRun):
             #read queue and filter
             if(not self.globalQ.empty()):
                 if(not self.protocol.p_hasInitialStatus()):
-                    if(self.debug):
+                    if(debug):
                         print('Clearing Q: camera not initialized!')
                     self._clearQueue(self.globalQ)
                 # if(globalQ.qsize() > 50):
                 #     print('Global Queue Size: ', globalQ.qsize())
                 
                 if(canPopfromQ):
-                    #print('Popping from Queue ...')
+                    if(debug):
+                        print('Popping from Queue ...')
                     try:
                         inObj = self.globalQ.get_nowait()
                     except Empty:
@@ -613,16 +614,21 @@ class SoundCamConnector(object):
                         inObj = xsData + inObj
                         xsData = bytes()
                         sz = len(inObj)
-                        print('Prepended xsData ...')
-                    data = memoryview(inObj)
+                        if(debug):
+                            print('Prepended xsData ...')
+                    else:
+                        data = memoryview(inObj)
+                        readPos = 0
                 
                     if(contRead):#if fetching subsequent bytes #TODO revisit this logic with readPos parameter
-                        #print('Fetching subsequent for ObjectType: ', curId)
+                        if(debug):
+                            print('Fetching subsequent for ObjectType: ', curId)
                         rd, readPos, readsz = self._readBytes(data, readPos, remainingLen)
-                        #print('Subsequent:  ', rd)
+                        #print('SubReadSize: ', readsz, '\nSubsequent:  ', rd)
                         curBf += rd
                         if(readsz == remainingLen):
-                            #print('Appending to corresponding deque ...')
+                            if(debug):
+                                print('Appending to corresponding deque ...')
                             self._routeData(curId=curId, curBf=curBf)
                             #reset params
                             curId = 0
@@ -631,21 +637,18 @@ class SoundCamConnector(object):
                             remainingLen = 0
                             if(remainingLen == sz):
                                 continue
-
-                            #reset buffers
-                            #inObj = data.read(-1) # read all
-                            #data = data[remainingLen:].tobytes() # read all
                         else: #if not all bytes fetched, recalculate remaining length
                             remainingLen = remainingLen - readsz
-                            #print('More data required. RemainingLength: ', remainingLen)
+                            if(debug):
+                                print('More data required. RemainingLength: ', remainingLen)
+                            canPopfromQ = True
                             continue #go back to start
                 else:
                     #print('previous Queue processing ...')
                     #reset buffers
                     if(readPos != 0):
-                        #inObj = data.read(-1)
-                        #data = io.BytesIO(inObj)
-                        data = data[readPos:].tobytes()
+                        inObj = data[readPos:].tobytes()
+                        data = memoryview(inObj)
                         readPos = 0
                     canPrintLen = True
                     isHdrPkt = True
@@ -654,17 +657,19 @@ class SoundCamConnector(object):
                 if(canPrintLen and isHdrPkt):
                     if(inObj):
                         hdr, readPos, _ = self._readBytes(data, readPos, 12)
-                        if(hdr is None):
+                        if(hdr == b''):
                             canPopfromQ = True
                             continue
                         dmsg = self.protocol.unpackDataMessage(hdr)
-                        #print(dmsg)
+                        if(debug):
+                            print(dmsg)
                     else:
-                        #print('msg failure! -> empty buffer')
+                        if(debug):
+                            print('msg failure! -> empty buffer')
                         canPopfromQ = True
                         continue
-
-                    #print('Pre-dmsg (if)', dmsg)
+                    if(debug):
+                        print('Pre-dmsg (if)', dmsg)
                     if((dmsg.Command == DataMessages.CommandCodes.DataMessage.value) and 
                        (dmsg.ObjectCount <= 10)):
                         for i in range(dmsg.ObjectCount):
@@ -682,69 +687,75 @@ class SoundCamConnector(object):
                                     
                             curBf, readPos, readsz = self._readBytes(data, readPos, dobj.Length)
                             if(dobj.Id == DataObjects.Ids.AcousticVideoData.value):
-                                #print('Got Acoustic-Video data')
+                                print('Got Acoustic-Video data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(self.acVidQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - readsz
-                                    #print('AcVid: subsequent triggered. remaining: ', remainingLen)
+                                    if(debug):
+                                        print('AcVid: subsequent triggered. remaining: ', remainingLen)
                                     break
 
                             elif(dobj.Id == DataObjects.Ids.VideoData.value):
-                                #print('Got Video data')
+                                print('Got Video data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(self.vidQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - readsz
-                                    #print('Vid: subsequent triggered. remaining: ', remainingLen)
+                                    if(debug):
+                                        print('Vid: subsequent triggered. remaining: ', remainingLen)
                                     break
                             
                             elif(dobj.Id == DataObjects.Ids.SpectrumData.value):
-                                #print('Got Spectrum data')
+                                print('Got Spectrum data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(self.specQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - readsz
-                                    #print('Spec: subsequent triggered. remaining: ', remainingLen)
+                                    if(debug):
+                                        print('Spec: subsequent triggered. remaining: ', remainingLen)
                                     break
 
                             elif(dobj.Id == DataObjects.Ids.AudioData.value):
-                                #print('Got Audio data')
+                                print('Got Audio data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(self.audQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - readsz
-                                    #print('Audio: subsequent triggered. remaining: ', remainingLen)
+                                    if(debug):
+                                        print('Audio: subsequent triggered. remaining: ', remainingLen)
                                     break
 
                             elif(dobj.Id == DataObjects.Ids.RawData.value):
-                                #print('Got Raw data')
+                                print('Got Raw data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(rawQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - readsz
-                                    #print('Raw: subsequent triggered. remaining: ', remainingLen)
+                                    if(debug):
+                                        print('Raw: subsequent triggered. remaining: ', remainingLen)
                                     break
 
                             elif(dobj.Id == DataObjects.Ids.ThermalVideoData.value):
-                                #print('Got Thermal-Video data')
+                                print('Got Thermal-Video data')
                                 if(readsz == dobj.Length):
                                     self._addQueue(self.thermalQ, curBf)
                                 else: # trigger subsequent reads if bytes insufficient
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - readsz
-                                    #print('Thermal: subsequent triggered. remaining: ', remainingLen)
+                                    if(debug):
+                                        print('Thermal: subsequent triggered. remaining: ', remainingLen)
                                     break
                             
                             elif(dobj.Id == DataObjects.Ids.CommonStatus.value):
@@ -756,7 +767,8 @@ class SoundCamConnector(object):
                                     contRead = True
                                     curId = dobj.Id
                                     remainingLen = dobj.Length - readsz
-                                    #print('CommonStatus: subsequent triggered. remaining: ', remainingLen)
+                                    if(debug):
+                                        print('CommonStatus: subsequent triggered. remaining: ', remainingLen)
                                     break
 
                             #check if inMsg still has stuff that can be read
@@ -768,7 +780,6 @@ class SoundCamConnector(object):
                         #print('For loop break')
                         canPrintLen = False
                         isHdrPkt = False
-                        readPos = 0
                         canPopfromQ = True
                     else:
                         #print('\nPacket discarded! - Size: ', len(inObj))
@@ -780,7 +791,6 @@ class SoundCamConnector(object):
                             canPopfromQ = False
                         else:
                             canPopfromQ = True
-                            readPos = 0
             else:
                 pass
 
@@ -891,6 +901,8 @@ class SoundCamConnector(object):
                 if(raw is None):
                     continue
                 decoded = self.protocol.unpackDecodeSpectrumData(raw)
+                if(decoded is None):
+                    continue
                 with self.spec_semaphore:
                     self.scamUtils.updateSpectrumBuffer(decoded)
                     energy_info = self.scamUtils.computeEnergy(getArray=False)
@@ -913,9 +925,7 @@ class SoundCamConnector(object):
                             print(f"Standard deviation of energy: {energy_info[1]:.4f}")
                             has_started = False
                             self.scamUtils.updateDetection(False)
-                        
-                    
-                
+                                       
                 #print('Spectrum:', decoded[0], ' ' ,decoded[1])
                 if(not self.proc_specQ.full()): #push spectrum data to overlay_Q
                     self.proc_specQ.put(decoded)
