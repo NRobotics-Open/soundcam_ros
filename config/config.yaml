@@ -26,11 +26,11 @@ dynamic: 10.0 #dB
 maximum: 54.2 #dB if 0 -> use the max of last 10 seconds
 crest: 15.0 #dB [5 - 15]
 
-processVideo: False
-processAcVideo: False
-processSpectrum: False
-processAudio: False
-processThermal: False
+processVideo: True
+processAcVideo: True
+processSpectrum: True
+processAudio: True
+processThermal: True
 
 #Visualization parameters -> if 'system_run' is True
 visualizeVideo: False
