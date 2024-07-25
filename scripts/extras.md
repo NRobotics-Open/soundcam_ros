@@ -33,3 +33,15 @@ Command:int
     TemperatureBottom:float
     CPULoad_1:int 
     CPULoad_2:int
+
+# Gstreamer Server
+(slow)
+gst-launch-1.0 v4l2src device=/dev/video4 ! videoconvert ! x264enc tune=zerolatency bitrate=500 speed-preset=superfast ! h264parse ! mpegtsmux ! tcpserversink host=127.0.0.1 port=8080
+
+(fast)
+gst-launch-1.0 -q v4l2src device=/dev/video4 ! video/x-raw,format=YUY2,width=1920,height=1080,framerate=30/1 ! videoconvert ! queue ! x264enc tune=zerolatency bitrate=500 speed-preset=superfast key-int-max=30 ! h264parse ! mpegtsmux ! tcpserversink host=127.0.0.1 port=5000 sync-method=2
+
+
+# Client
+gst-launch-1.0 -v tcpclientsrc host=127.0.0.1 port=5000 ! tsdemux ! h264parse ! avdec_h264 ! videoscale method=6 ! video/x-raw,width=1920,height=1080 ! videoconvert ! autovideosink sync=false
+
