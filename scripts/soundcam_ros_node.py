@@ -23,6 +23,7 @@ from soundcam_protocol import Features
 from utils import ROSLayerUtils
 from datetime import datetime
 import cv2
+import pyfakewebcam as pf
 
 class SoundcamROS(object):
     def __init__(self) -> None:
@@ -54,9 +55,21 @@ class SoundcamROS(object):
         self.manualTrigger = False
         self.recordTrigger = False
         self.pauseContinuous = False
+        self.devStr = list()
+        self.pubDevStream = self.cfg['publish_dev']
 
     def bringUpInterfaces(self):
         rospy.loginfo('Bringing up interfaces ...')
+        if(self.pubDevStream):
+            rospy.loginfo('Instantiating dev streams ...')
+            # gst_pipeline = (
+            #     "appsrc ! videoconvert ! "
+            #     "video/x-raw,format=I420 ! "
+            #     "v4l2sink device=/dev/video10"
+            # )
+            #self.dev10 = cv2.VideoWriter(gst_pipeline, cv2.CAP_GSTREAMER, 0, 15.0, (640, 480), True)
+            self.devStr.append(pf.FakeWebcam(self.cfg['bw_virt_device'], 640, 480))
+
         if(not cfgContext['system_run']): #start publishers, service servers and action servers
             self.status_pub = rospy.Publisher(self.cfg['frame'] + '/status', SoundcamStatus, queue_size=3, latch=True)
             self.statusPublish(self.status_pub, self.camera.getStatus)
@@ -68,7 +81,8 @@ class SoundcamROS(object):
             self.vidbw_pub = rospy.Publisher(self.cfg['frame'] + '/video/bw/compressed', CompressedImage, queue_size=15)
             thread_grp.append(threading.Thread(target=self.videoPublishing, 
                                       args=[self.vidbw_pub, self.camera.getBWVideo, 
-                                            SoundcamServiceRequest.VIDEO_STREAM], 
+                                            SoundcamServiceRequest.VIDEO_STREAM, 
+                                            self.devStr[0]], 
                                       daemon=True))
             
             self.vidthm_pub = rospy.Publisher(self.cfg['frame'] + '/video/thermal/compressed', CompressedImage, queue_size=15)
@@ -155,7 +169,7 @@ class SoundcamROS(object):
         if(self.debug):
             rospy.loginfo_throttle(3, 'SC| Sent status msg')
 
-    def videoPublishing(self, pub:rospy.Publisher, fn, streamType):
+    def videoPublishing(self, pub:rospy.Publisher, fn, streamType, devStrObj:pf.FakeWebcam=None):
         rate = rospy.Rate(15)
         while(not rospy.is_shutdown() and self.canRun):
             if(not self.pauseContinuous):
@@ -163,6 +177,14 @@ class SoundcamROS(object):
                 #print(img_arr.shape)
                 #print(img_arr)
                 if(img_arr is not None):
+                    # Publish to DEV
+                    if(self.pubDevStream and devStrObj is not None):
+                        processed_frame = self.utils.publishDevStream(img_arr)
+                        devStrObj.schedule_frame(processed_frame)
+                        # cv2.imshow('Processed Frame', processed_frame)
+                        # if cv2.waitKey(1) & 0xFF == ord('q'):
+                        #     break
+
                     # MANUAL stream recording
                     if(self.manualTrigger and (self.streamType == streamType)):
                         self._manual_frames_ls.append(img_arr)

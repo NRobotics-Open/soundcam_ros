@@ -685,6 +685,25 @@ class ROSLayerUtils(object):
         # Release everything if job is finished
         out.release()
         frame_list.clear()
+    
+    '''
+    Publishes the frame to the given devstream object
+    '''
+    def publishDevStream(self, frame):
+        # Get the shape of the frames
+        layers = None
+        try:
+            _, _ = frame.shape
+        except Exception as e:
+            _, _, layers = frame.shape
+
+        # Define the codec and push to VideoWriter object
+        if(layers is None):
+            proc_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        elif (layers == 4):
+            proc_frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
+        #strmObj.write(proc_frame)
+        return proc_frame
 
     def createAudioFromFrames(self, audio_frames:list, samplerate, output_file=None):
         # Concatenate the list of numpy arrays into a single numpy array

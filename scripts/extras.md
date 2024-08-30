@@ -45,3 +45,6 @@ gst-launch-1.0 -q v4l2src device=/dev/video4 ! video/x-raw,format=YUY2,width=192
 # Client
 gst-launch-1.0 -v tcpclientsrc host=127.0.0.1 port=5000 ! tsdemux ! h264parse ! avdec_h264 ! videoscale method=6 ! video/x-raw,width=1920,height=1080 ! videoconvert ! autovideosink sync=false
 
+# Python Virtual Device publishing
+    - Debug with: vlc v4l2:///dev/video4
+
