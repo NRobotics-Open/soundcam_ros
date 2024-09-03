@@ -36,15 +36,23 @@ Command:int
 
 # Gstreamer Server
 (slow)
-gst-launch-1.0 v4l2src device=/dev/video4 ! videoconvert ! x264enc tune=zerolatency bitrate=500 speed-preset=superfast ! h264parse ! mpegtsmux ! tcpserversink host=127.0.0.1 port=8080
+gst-launch-1.0 v4l2src device=/dev/video0 ! videoconvert ! x264enc tune=zerolatency bitrate=500 speed-preset=superfast ! h264parse ! mpegtsmux ! tcpserversink host=127.0.0.1 port=8080
 
 (fast)
-gst-launch-1.0 -q v4l2src device=/dev/video4 ! video/x-raw,format=YUY2,width=1920,height=1080,framerate=30/1 ! videoconvert ! queue ! x264enc tune=zerolatency bitrate=500 speed-preset=superfast key-int-max=30 ! h264parse ! mpegtsmux ! tcpserversink host=127.0.0.1 port=5000 sync-method=2
+gst-launch-1.0 -q v4l2src device=/dev/video0 ! video/x-raw,format=YUY2,width=1920,height=1080,framerate=30/1 ! videoconvert ! queue ! x264enc tune=zerolatency bitrate=500 speed-preset=superfast key-int-max=30 ! h264parse ! mpegtsmux ! tcpserversink host=127.0.0.1 port=5000 sync-method=2
 
 
 # Client
 gst-launch-1.0 -v tcpclientsrc host=127.0.0.1 port=5000 ! tsdemux ! h264parse ! avdec_h264 ! videoscale method=6 ! video/x-raw,width=1920,height=1080 ! videoconvert ! autovideosink sync=false
 
+souphttpsrc location=http://192.168.3.100/mist?source=dc ! multipartdemux ! jpegdec ! videoconvert ! video/x-raw,format=I420,width=1280,height=960,framerate=24/1 ! timeoverlay draw-shadow=false draw-outline=false deltay=20 font-desc=\"Sans, 42\" color=0xFF000000 ! x264enc bframes=0 speed-preset=veryfast key-int-max=30 bitrate=100 ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline ! queue silent=true ! rtph264pay mtu=1400 config-interval=-1 ! application/x-rtp,media=video,clock-rate=${$channels.video.clockRate},encoding-name=${$channels.video.encodingName},ssrc=(uint)${$channels.video.SSRC} ! queue silent=true ! udpsink host=127.0.0.1 port=${$pipeline.port} sync=false async=true
+
 # Python Virtual Device publishing
     - Debug with: vlc v4l2:///dev/video4
+
+    v4l2src device=/dev/video0 ! video/x-raw,format=I420,width=640,height=480,framerate=15/1 ! timeoverlay draw-shadow=false draw-outline=false deltay=20 font-desc=\"Sans, 42\" color=0xFF000000 ! x264enc bframes=0 speed-preset=veryfast key-int-max=30 bitrate=1500 ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline ! queue silent=true ! rtph264pay mtu=1400 config-interval=-1 ! application/x-rtp,media=video,clock-rate=${$channels.video.clockRate},encoding-name=${$channels.video.encodingName},ssrc=(uint)${$channels.video.SSRC} ! queue silent=true ! udpsink host=127.0.0.1 port=${$pipeline.port} sync=false async=true
+
+
+    v4l2src device=/dev/video0 ! video/x-raw,format=YUY2,width=640,height=480,framerate=30/1 ! videoconvert ! video/x-raw,format=I420 ! x264enc bframes=0 speed-preset=veryfast key-int-max=30 bitrate=1500 ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline ! queue silent=true ! rtph264pay mtu=1400 config-interval=-1 ! application/x-rtp,media=video,clock-rate=${$channels.video.clockRate},encoding-name=${$channels.video.encodingName},ssrc=(uint)${$channels.video.SSRC} ! queue silent=true ! udpsink host=127.0.0.1 port=${$pipeline.port} sync=false async=true
+
 
