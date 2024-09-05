@@ -684,17 +684,40 @@ class SoundcamROS(object):
         delay = int(goal.parameters['delay'])
         numCaptures = int(goal.parameters['numCaptures'])
         recordTime = float(goal.parameters['recordTime'])
-        media = [int(x) for x in goal.parameters['streamType'].split('|')]
+        media = [int(x) for x in goal.parameters['mediaType'].split('|')]
         if(SoundcamServiceRequest.ALL not in media):
             streamType = media
         else:
             streamType = SoundcamServiceRequest.ALL
-        msnId = int(goal.parameters['msnId'])
-        msnName = goal.parameters['msnName']
-        wpId = int(goal.parameters['wpId'])
-        wpX = float(goal.parameters['wpX'])
-        wpY = float(goal.parameters['wpY'])
-        wpTheta = float(goal.parameters['wpTheta'])
+        msnId = int(goal.parameters['missionId'])
+        msnName = goal.parameters['missionName']
+        wpId = int(goal.parameters['waypointId'])
+        wpX = float(goal.parameters['waypointX'])
+        wpY = float(goal.parameters['waypointY'])
+        wpTheta = float(goal.parameters['waypointTheta'])
+
+        if(bool(goal.parameters['hasPreset'])):
+            wp_preset = Preset(scalingMode=int(goal.parameters['scalingMode']),
+                                    crest=float(goal.parameters['crest']),
+                                    distance=float(goal.parameters['distance']),
+                                    maximum=float(goal.parameters['maximum']),
+                                    dynamic=float(goal.parameters['dynamic']),
+                                    maxFrequency=int(goal.parameters['maxFrequency']),
+                                    minFrequency=int(goal.parameters['minFrequency']))
+            if(self.camera.isMeasuring()): #stop measurement if running
+                self.camera.stopMeasurement()
+            if(self.setPreset(wp_preset)):
+                rospy.loginfo('Preset sent!')
+                self.curPreset = wp_preset
+                self.camera.startMeasurement() #start measurement
+                start_t = time.time()
+                while(not self.camera.isContinuousStream()):
+                    rospy.loginfo_throttle(3, "Awaiting camera stream ...")
+                    if((time.time() - start_t) >= 15.0):
+                        rospy.logwarn("Camera stream taking longer to resume \
+                                        \nCamera might be in Error!")
+                        break
+
         #prepare directory
         if(not str(msnId) in self.utils.getPath()):
             self.utils.prepareDirectory(msnId, msnName)
