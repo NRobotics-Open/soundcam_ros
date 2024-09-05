@@ -393,7 +393,9 @@ class SoundcamROS(object):
                 rospy.logerr('SC| Error taking TM snapshot: ', e)
                 return False
         elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
-            frame = self._getFrame(self.camera.getOverlayVideo)
+            p_img_arr1 = self._getFrame(self.camera.getBWVideo)
+            p_img_arr2 = self._getFrame(self.camera.getACVideo)
+            frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
             if(frame is None):
                 return False
             try:
@@ -418,7 +420,9 @@ class SoundcamROS(object):
                     media.append(filename)
 
                 filename = 'OVERLAY_' + timestamp + '.jpg'
-                frame = self._getFrame(self.camera.getOverlayVideo)
+                p_img_arr1 = self._getFrame(self.camera.getBWVideo)
+                p_img_arr2 = self._getFrame(self.camera.getACVideo)
+                frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
                 if(frame is not None):
                     self.utils.createSnapshotFromFrame(frame, filename=filename)
                     media.append(filename)
@@ -535,7 +539,7 @@ class SoundcamROS(object):
     def serviceCB(self, req:SoundcamServiceRequest):
         if(self.debug):
             rospy.loginfo("Incoming Service Call ...")
-            rospy.loginfo("\tCommand Type: %i" % 
+            rospy.loginfo("\tCommand Type: %s" % 
                     ("CONFIG" if (req.command_type == SoundcamServiceRequest.CMD_TYPE_CONFIG) else "OP"))
             rospy.loginfo("\t CaptureTime: %f" % req.captureTime)
             if(req.preset.hasPreset):
