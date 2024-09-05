@@ -535,29 +535,31 @@ class SoundcamROS(object):
     def serviceCB(self, req:SoundcamServiceRequest):
         if(self.debug):
             rospy.loginfo("Incoming Service Call ...")
-        #     rospy.loginfo("\t Command Type: ", req.command_type)
-        #     rospy.loginfo("\t CaptureTime: ", req.captureTime)
-        #     rospy.loginfo("\t Preset: ")
-        #     rospy.loginfo("\t\t Scaling Mode: ", req.preset.scalingMode)
-        #     rospy.loginfo("\t\t Crest: ", req.preset.crest)
-        #     rospy.loginfo("\t\t Distance: ", req.preset.distance)
-        #     rospy.loginfo("\t\t Maximum: ", req.preset.maximum)
-        #     rospy.loginfo("\t\t Dynamic: ", req.preset.dynamic)
-        #     rospy.loginfo("\t\t Max. Frequency: ", req.preset.maxFrequency)
-        #     rospy.loginfo("\t\t Min. Frequency: ", req.preset.minFrequency)
-        #     rospy.loginfo("\t Media Type: ", req.mediaType)
-        #     rospy.loginfo("\t Command: ", req.command)
-        #     rospy.loginfo("\t\t Op. Cmd-1: ", req.op_command1)
-        #     rospy.loginfo("\t\t Op. Cmd-2: ", req.op_command2)
-        #     rospy.loginfo("\t\t Op. Cmd-3: ", req.op_command3)
-        #     try:
-        #         if(len(req.extras) > 0):
-        #             rospy.loginfo("\t\t Extras: ")
-        #             for kv in req.extras:
-        #                 dt:KeyValue = kv
-        #                 rospy.loginfo("\t\t\t Key: {}, Value: {}".format(dt.key, dt.value))
-        #     except Exception:
-        #         pass
+            rospy.loginfo("\tCommand Type: %i" % 
+                    ("CONFIG" if (req.command_type == SoundcamServiceRequest.CMD_TYPE_CONFIG) else "OP"))
+            rospy.loginfo("\t CaptureTime: %f" % req.captureTime)
+            if(req.preset.hasPreset):
+                rospy.loginfo("\t Preset: ")
+                rospy.loginfo("\t\t Scaling Mode: %f" % req.preset.scalingMode)
+                rospy.loginfo("\t\t Crest: %f" % req.preset.crest)
+                rospy.loginfo("\t\t Distance: %f" % req.preset.distance)
+                rospy.loginfo("\t\t Maximum: %f" % req.preset.maximum)
+                rospy.loginfo("\t\t Dynamic: %f" % req.preset.dynamic)
+                rospy.loginfo("\t\t Max. Frequency: %i" % req.preset.maxFrequency)
+                rospy.loginfo("\t\t Min. Frequency: %i" % req.preset.minFrequency)
+            rospy.loginfo("\t Media Type: %s" % req.mediaType)
+            rospy.loginfo("\t Command: %i" % req.command)
+            rospy.loginfo("\t\t Op. Cmd-1: %i" % req.op_command1)
+            rospy.loginfo("\t\t Op. Cmd-2: %i" % req.op_command2)
+            rospy.loginfo("\t\t Op. Cmd-3: %i" % req.op_command3)
+            try:
+                if(len(req.extras) > 0):
+                    rospy.loginfo("\t\t Extras: ")
+                    for kv in req.extras:
+                        dt:KeyValue = kv
+                        rospy.loginfo("\t\t\t Key: {}, Value: {}".format(dt.key, dt.value))
+            except Exception:
+                pass
         
         resp = SoundcamServiceResponse()
         resp.results = SoundcamServiceResponse.SUCCESS
@@ -575,19 +577,20 @@ class SoundcamROS(object):
                     dt:KeyValue = req.extras[0]
                     if(dt.key != '' and dt.value != ''):
                         self.utils.prepareDirectory(int(dt.key), dt.value)
-                #Configure camera preset
-                if(self.camera.isMeasuring()): #stop measurement if running
-                    self.camera.stopMeasurement()
-                if(self.setPreset(req.preset)):
-                    rospy.loginfo('Preset sent!')
-                    self.curPreset = req.preset
-                    self.camera.startMeasurement() #start measurement
-                else:
-                    rospy.logerr('Unable to send preset!')
-                    if(not self.camera.isMeasuring()):
-                        self.setPreset(self.curPreset)
-                        self.camera.startMeasurement()
-                    resp.results = SoundcamServiceResponse.FAIL
+                
+                if(req.preset.hasPreset): #Configure camera preset
+                    if(self.camera.isMeasuring()): #stop measurement if running
+                        self.camera.stopMeasurement()
+                    if(self.setPreset(req.preset)):
+                        rospy.loginfo('Preset sent!')
+                        self.curPreset = req.preset
+                        self.camera.startMeasurement() #start measurement
+                    else:
+                        rospy.logerr('Unable to send preset!')
+                        if(not self.camera.isMeasuring()):
+                            self.setPreset(self.curPreset)
+                            self.camera.startMeasurement()
+                        resp.results = SoundcamServiceResponse.FAIL
             except Exception as e:
                 rospy.logerr("Error occured! ", e)
                 resp.results = SoundcamServiceResponse.FAIL
@@ -642,7 +645,7 @@ class SoundcamROS(object):
                                         max=None, crest=crest)):
                         resp.results = SoundcamServiceResponse.FAIL
                 elif(req.command == SoundcamServiceRequest.SCAN_DETECT):
-                    self.autoDetect = True if (req.op_command1 == 1) else False
+                    self.autoDetect = True if (req.op_command2 == 1) else False
                 else:
                     resp.results = SoundcamServiceResponse.FAIL
             except Exception as e:

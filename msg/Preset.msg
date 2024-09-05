@@ -9,3 +9,4 @@ float32 maximum  # maximum threshold (fixed scaling)
 float32 dynamic
 int32 maxFrequency #maximum configured frequency
 int32 minFrequency #minimum configured frequency
+bool hasPreset
