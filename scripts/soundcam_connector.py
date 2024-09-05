@@ -100,6 +100,7 @@ class SoundCamConnector(object):
 
         self.bufSize = 1460
         self.recvStream = False
+        self.hasStreamData = False
         self.canRun = True
         self.processData = multiprocessing.Event()
         self.processData.set()
@@ -432,6 +433,7 @@ class SoundCamConnector(object):
     '''
     def updatePreset(self, mode, distance, minFreq, maxFreq,
                      dynamic=3.1, crest=5.0, maximum=None):
+        self.hasStreamData = False
         try:
             time.sleep(1.0)
             #configure acoustic filter
@@ -511,6 +513,8 @@ class SoundCamConnector(object):
                         if(self.recvStream):
                             #self._addQueue(self.globalQ, res, cast=False)
                             self.globalQ.put(res)
+                            if(not self.hasStreamData):
+                                self.hasStreamData = True
                         else: #if not streaming
                             try:
                                 self.protocol.unpackDecodeResponse(response=res)
@@ -1330,6 +1334,9 @@ class SoundCamConnector(object):
     
     def getScalingMode(self):
         return self.scamUtils.getScalingMode()
+    
+    def isContinuousStream(self):
+        return self.hasStreamData
 
     '''
     --------------------------------------------------------------------VISUALIZATION METHODS
