@@ -696,27 +696,27 @@ class SoundcamROS(object):
         wpY = float(goal.parameters['waypointY'])
         wpTheta = float(goal.parameters['waypointTheta'])
 
-        if(bool(goal.parameters['hasPreset'])):
-            wp_preset = Preset(scalingMode=int(goal.parameters['scalingMode']),
-                                    crest=float(goal.parameters['crest']),
-                                    distance=float(goal.parameters['distance']),
-                                    maximum=float(goal.parameters['maximum']),
-                                    dynamic=float(goal.parameters['dynamic']),
-                                    maxFrequency=int(goal.parameters['maxFrequency']),
-                                    minFrequency=int(goal.parameters['minFrequency']))
-            if(self.camera.isMeasuring()): #stop measurement if running
-                self.camera.stopMeasurement()
-            if(self.setPreset(wp_preset)):
-                rospy.loginfo('Preset sent!')
-                self.curPreset = wp_preset
-                self.camera.startMeasurement() #start measurement
-                start_t = time.time()
-                while(not self.camera.isContinuousStream()):
-                    rospy.loginfo_throttle(3, "Awaiting camera stream ...")
-                    if((time.time() - start_t) >= 15.0):
-                        rospy.logwarn("Camera stream taking longer to resume \
-                                        \nCamera might be in Error!")
-                        break
+        # if(bool(goal.parameters['hasPreset'])):
+        #     wp_preset = Preset(scalingMode=int(goal.parameters['scalingMode']),
+        #                             crest=float(goal.parameters['crest']),
+        #                             distance=float(goal.parameters['distance']),
+        #                             maximum=float(goal.parameters['maximum']),
+        #                             dynamic=float(goal.parameters['dynamic']),
+        #                             maxFrequency=int(goal.parameters['maxFrequency']),
+        #                             minFrequency=int(goal.parameters['minFrequency']))
+        #     if(self.camera.isMeasuring()): #stop measurement if running
+        #         self.camera.stopMeasurement()
+        #     if(self.setPreset(wp_preset)):
+        #         rospy.loginfo('Preset sent!')
+        #         self.curPreset = wp_preset
+        #         self.camera.startMeasurement() #start measurement
+        #         start_t = time.time()
+        #         while(not self.camera.isContinuousStream()):
+        #             rospy.loginfo_throttle(3, "Awaiting camera stream ...")
+        #             if((time.time() - start_t) >= 15.0):
+        #                 rospy.logwarn("Camera stream taking longer to resume \
+        #                                 \nCamera might be in Error!")
+        #                 break
 
         #prepare directory
         if(not str(msnId) in self.utils.getPath()):
