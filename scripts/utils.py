@@ -534,7 +534,7 @@ from datetime import datetime
 import yaml
 class ROSLayerUtils(object):
     DataPoint = namedtuple('DataPoint', 'id x y theta media')
-    def __init__(self) -> None:
+    def __init__(self, debug=False) -> None:
         self.mediaDir = os.path.expanduser("~") + '/current'
         if(not os.path.exists(self.mediaDir)):
             os.makedirs(self.mediaDir)
@@ -550,28 +550,37 @@ class ROSLayerUtils(object):
         self.path = None
         self.metaData = dict({'datapoints':[], 'actionpoints':[]})
         self.localId = 1
+        self.debug = debug
 
     def prepareDirectory(self, id, name):
         self.missionID = id
         self.missionName = name
         today = datetime.now().strftime("%Y_%m_%d")
-        msn_time = datetime.now().strftime("%H_%m")
+        msn_time = datetime.now().strftime("%H_%M")
         self.path = os.path.join(self.msnDir, id, today, msn_time)
         if(not os.path.exists(self.path)): 
             os.makedirs(self.path)
         self.localId = 1 #reset internal id
     
-    def getPath(self):
-        if(self.path is not None):
+    def getUniqueName(self, isImg=True, suffix=''):
+        today = datetime.now().strftime("%Y_%m_%d_")
+        msn_time = datetime.now().strftime("%H_%M_%S")
+        if(isImg):
+            return ''.join(['IMG_', suffix, '_', today, msn_time, '.jpg'])
+        else:
+            return ''.join(['VID_', suffix, '_', today, msn_time, '.mp4'])
+    
+    def getPath(self, fetchMsnDir=False):
+        if(fetchMsnDir):
             return self.path
         else:
             return self.mediaDir
     
-    def addMetaData(self, media, pose, isActionPoint=False, id=None):
+    def addMetaData(self, media, pose, isActionPoint=False, id=None, useMsnPath=False):
         assignedId = self.localId if (id is None) else id
         obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
                                             pose[0], pose[1], pose[2], media)
-        path = self.getPath()
+        path = self.getPath(fetchMsnDir=useMsnPath)
         if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
             with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
                 self.metaData = yaml.safe_load(infofile)
@@ -652,11 +661,12 @@ class ROSLayerUtils(object):
         if(filename is None):
             save_to = os.path.join(self.mediaDir, self.curImg)
         else:
-            save_to = os.path.join(self.getPath(), filename)
-        print('Saving snaphsot to: ', save_to)
+            save_to = os.path.join(self.getPath(fetchMsnDir=True), filename)
+        if(self.debug):
+            print('Saving snaphsot to: ', save_to)
         cv2.imwrite(save_to, frame)
     
-    def createVideoFromFrames(self, frame_list:list, path_to_file=None, fps=15):
+    def createVideoFromFrames(self, frame_list:list, filename=None, fps=10):
         if not frame_list:
             raise ValueError("Frame list is empty. Cannot create video.")
 
@@ -670,11 +680,15 @@ class ROSLayerUtils(object):
 
         # Define the codec and create VideoWriter object
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # You can use other codecs like 'XVID'
-        if(path_to_file is None):
-            out = cv2.VideoWriter(os.path.join(self.mediaDir, self.curVid), 
-                                  fourcc, fps, frame_size)
+        if(filename is None):
+            save_to = os.path.join(self.mediaDir, self.curVid)
         else:
-            out = cv2.VideoWriter(path_to_file, fourcc, fps, frame_size)
+            save_to = os.path.join(self.getPath(fetchMsnDir=True), filename)
+        
+        if('THM' in filename):
+            fps = 4
+        out = cv2.VideoWriter(save_to, fourcc, fps, frame_size)
+        
         for frame in frame_list:
             #print('Shape: ', frame.shape)
             if(layers is None):
@@ -705,14 +719,15 @@ class ROSLayerUtils(object):
         #strmObj.write(proc_frame)
         return proc_frame
 
-    def createAudioFromFrames(self, audio_frames:list, samplerate, output_file=None):
+    def createAudioFromFrames(self, audio_frames:list, samplerate, filename=None):
         # Concatenate the list of numpy arrays into a single numpy array
         audio_data = np.concatenate(audio_frames)
         # Save the concatenated audio data to a file
-        if(output_file is None):
-            sf.write(os.path.join(self.mediaDir, self.curAud), audio_data, samplerate)
+        if(filename is None):
+            save_to = os.path.join(self.mediaDir, self.curAud)
         else:
-            sf.write(output_file, audio_data, samplerate)
+            save_to = os.path.join(self.getPath(fetchMsnDir=True), filename)
+        sf.write(save_to, audio_data, samplerate)
     
     def imageOverlay(self, img_arr1:np.array, img_arr2:np.array):
         #print(acFrame.shape)

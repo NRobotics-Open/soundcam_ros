@@ -56,3 +56,8 @@ souphttpsrc location=http://192.168.3.100/mist?source=dc ! multipartdemux ! jpeg
     v4l2src device=/dev/video0 ! video/x-raw,format=YUY2,width=640,height=480,framerate=30/1 ! videoconvert ! video/x-raw,format=I420 ! x264enc bframes=0 speed-preset=veryfast key-int-max=30 bitrate=1500 ! video/x-h264,stream-format=byte-stream,profile=constrained-baseline ! queue silent=true ! rtph264pay mtu=1400 config-interval=-1 ! application/x-rtp,media=video,clock-rate=${$channels.video.clockRate},encoding-name=${$channels.video.encodingName},ssrc=(uint)${$channels.video.SSRC} ! queue silent=true ! udpsink host=127.0.0.1 port=${$pipeline.port} sync=false async=true
 
 
+## VIRTUAL DEVICE CREATION [url](https://rmsol.de/2020/04/25/v4l2/)
+    -   sudo modprobe v4l2loopback
+    -   v4l2-ctl --list-devices
+
+

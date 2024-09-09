@@ -31,7 +31,7 @@ class SoundcamROS(object):
         self.cfg = cfgContext
         self.debug = self.cfg['ros_debug']
         self.camera = SoundCamConnector(debug=self.cfg['driver_debug'], cfgObj=self.cfg)
-        self.utils = ROSLayerUtils()
+        self.utils = ROSLayerUtils(debug=self.debug)
         
         #operational parameters
         self.curPreset = Preset(scalingMode=self.cfg['scalingMode'],
@@ -47,6 +47,7 @@ class SoundcamROS(object):
         self._isStartup = True
         # Stream recording parameters
         self._manual_frames_ls = list()
+        self._manual_audio_frames_ls = list()
         self._auto_bw_frames_ls = list()
         self._auto_tm_frames_ls = list()
         self._auto_overlay_frames_ls = list()
@@ -57,6 +58,10 @@ class SoundcamROS(object):
         self.pauseContinuous = False
         self.devStr = list()
         self.pubDevStream = self.cfg['publish_dev']
+        self.prevUUID = ''
+        self._f_mul = self.cfg['frame_multiplier']
+        if(self._f_mul <= 0.0):
+            self._f_mul = 1.0
 
     def bringUpInterfaces(self):
         rospy.loginfo('Bringing up interfaces ...')
@@ -190,19 +195,16 @@ class SoundcamROS(object):
                         self._manual_frames_ls.append(img_arr)
                         self.utils.limitMemUsage(self._manual_frames_ls, self.cfg['max_megabytes'])
                     
+                    # # AUTO stream recording
                     if(self.recordTrigger):
                         if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
                             self._auto_bw_frames_ls.append(img_arr)
+                            self.utils.limitMemUsage(self._auto_bw_frames_ls, self.cfg['max_megabytes'])
                         elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
                             self._auto_tm_frames_ls.append(img_arr)
-                        elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
-                            self._auto_overlay_frames_ls.append(img_arr)
+                            self.utils.limitMemUsage(self._auto_tm_frames_ls, self.cfg['max_megabytes'])
 
                     if(pub.get_num_connections() > 0): # topic publishing
-                        # if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
-                        #     img = self.bridge.cv2_to_imgmsg(img_arr, "mono8")
-                        # else:
-                        #     img = self.bridge.cv2_to_imgmsg(img_arr, "bgr8")
                         if(self.debug):
                             rospy.loginfo_throttle(3, 
                                     'SC| Video Streaming on Stream type -> {0}'.format(streamType))
@@ -231,12 +233,9 @@ class SoundcamROS(object):
                         self.utils.limitMemUsage(self._manual_frames_ls, self.cfg['max_megabytes'])
                     
                     if(self.recordTrigger):
-                        if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
-                            self._auto_bw_frames_ls.append(img_arr)
-                        elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
-                            self._auto_tm_frames_ls.append(img_arr)
-                        elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
+                        if(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
                             self._auto_overlay_frames_ls.append(img_arr)
+                            self.utils.limitMemUsage(self._auto_overlay_frames_ls, self.cfg['max_megabytes'])
 
                     if(pub.get_num_connections() > 0): # topic publishing
                         if(self.debug):
@@ -254,8 +253,14 @@ class SoundcamROS(object):
         info_published = False
         while(not rospy.is_shutdown() and self.canRun):
             aud_arr:np.array = fn()
+
+            if(self.manualTrigger):
+                self._manual_audio_frames_ls.append(aud_arr)
+                self.utils.limitMemUsage(self._manual_audio_frames_ls, self.cfg['max_megabytes'])
+
             if(self.recordTrigger):
                 self._auto_audio_frames_ls.append(aud_arr)
+            
             if(pub.get_num_connections() > 0):
                 msg.header.stamp = rospy.Time.now()
                 if(aud_arr is not None):
@@ -378,19 +383,9 @@ class SoundcamROS(object):
             frame = self._getFrame(self.camera.getBWVideo)
             if(frame is None):
                 return False
-            try:
-                self.utils.createSnapshotFromFrame(frame)
-            except Exception as e:
-                rospy.logerr('SC| Error taking BW snapshot: ', e)
-                return False
         elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
             frame = self._getFrame(self.camera.getTMVideo)
             if(frame is None):
-                return False
-            try:
-                self.utils.createSnapshotFromFrame(frame)
-            except Exception as e:
-                rospy.logerr('SC| Error taking TM snapshot: ', e)
                 return False
         elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
             p_img_arr1 = self._getFrame(self.camera.getBWVideo)
@@ -398,40 +393,55 @@ class SoundcamROS(object):
             frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
             if(frame is None):
                 return False
-            try:
-                self.utils.createSnapshotFromFrame(frame)
-            except Exception as e:
-                rospy.logerr('SC| Error taking OV snapshot: ', e)
-                return False
         elif(streamType == SoundcamServiceRequest.ALL):
             try:
                 media = list()
-                timestamp = datetime.now().strftime("%H_%m_%S")
-                filename = 'VIDEO_' + timestamp + '.jpg'
+                frame_data = list()
+                filename = self.utils.getUniqueName(suffix='BW')
                 frame = self._getFrame(self.camera.getBWVideo)
                 if(frame is not None):
-                    self.utils.createSnapshotFromFrame(frame, filename=filename)
-                    media.append(filename)
+                    frame_data.append((frame, filename))
+                    # self.utils.createSnapshotFromFrame(frame, filename=filename)
+                    # media.append(filename)
 
-                filename = 'THERMAL_' + timestamp + '.jpg'
+                filename = self.utils.getUniqueName(suffix='THM')
                 frame = self._getFrame(self.camera.getTMVideo)
                 if(frame is not None):
-                    self.utils.createSnapshotFromFrame(frame, filename=filename)
-                    media.append(filename)
+                    frame_data.append((frame, filename))
+                    # self.utils.createSnapshotFromFrame(frame, filename=filename)
+                    # media.append(filename)
 
-                filename = 'OVERLAY_' + timestamp + '.jpg'
+                filename = self.utils.getUniqueName(suffix='OV')
                 p_img_arr1 = self._getFrame(self.camera.getBWVideo)
                 p_img_arr2 = self._getFrame(self.camera.getACVideo)
                 frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
                 if(frame is not None):
+                    frame_data.append((frame, filename))
+                    # self.utils.createSnapshotFromFrame(frame, filename=filename)
+                    # media.append(filename)
+                
+                for fobj in frame_data: #write snapshots
+                    self.utils.createSnapshotFromFrame(fobj[0], filename=fobj[1])
+                    media.append(fobj[1])
+            except Exception as e:
+                rospy.logerr('SC| Error taking snapshots [ALL]: ', e)
+                return False
+        
+        if(streamType != SoundcamServiceRequest.ALL):
+            try:
+                if(extras is not None):
+                    filename=self.utils.getUniqueName()
                     self.utils.createSnapshotFromFrame(frame, filename=filename)
                     media.append(filename)
-
-                if((extras is not None) and (len(media) > 0)):
-                    self.utils.addMetaData(media=media, pose=(extras[1:]), id=extras[0])
+                else:
+                    self.utils.createSnapshotFromFrame(frame)
             except Exception as e:
-                rospy.logerr('SC| Error taking snapshots: ', e)
+                rospy.logerr('SC| Error taking BW/THM/OV snapshot: ', e)
                 return False
+        
+        if((extras is not None) and (len(media) > 0)):
+            self.utils.addMetaData(media=media, pose=(extras[1:]), id=extras[0], 
+                                   useMsnPath=True)
         self.publishCaptureFeedback(self.capture_pub)
         if(self.debug):
             rospy.loginfo_throttle(1, 'SC| Snapshot success!')
@@ -445,76 +455,77 @@ class SoundcamROS(object):
             try:
                 self.manualTrigger = False
                 self.utils.createVideoFromFrames(self._manual_frames_ls)
+                self.utils.createAudioFromFrames(self._manual_audio_frames_ls, 
+                                                        self.camera.getAudioInfo()['sample_rate'], 
+                                                        filename)
                 self.publishCaptureFeedback(self.capture_pub)
                 if(self.debug):
                     rospy.loginfo_throttle(1, 'SC| Manual Recording success!')
                 return True
             except Exception as e:
                 rospy.logerr("SC| Error saving recording, ", e)
+                self._manual_audio_frames_ls.clear()
+                self._manual_frames_ls.clear()
                 if(self.debug):
-                    rospy.logerr_throttle(1, 'SC| Auto Recording failure!')
+                    rospy.logerr_throttle(1, 'SC| Manual Recording failure!')
                 return False
         else: # auto recording save
             self.recordTrigger = False
             try:
                 if((time.time() - start_t) >= self.cfg['min_record_time']):
-                    timestamp = datetime.now().strftime("%H_%m_%S")
+                    timestamp = datetime.now().strftime("%H_%M_%S")
                     media = list()
                     if(streamType == SoundcamServiceRequest.ALL):
-                        filename = 'VIDEO_' + timestamp + '.mp4'
-                        #print('Path details: getPath-> {0}, filename-> {1}'.format(self.utils.getPath(), filename))
-                        self.utils.createVideoFromFrames(self._auto_bw_frames_ls, 
-                                                    os.path.join(self.utils.getPath(), filename))
+                        filename = self.utils.getUniqueName(isImg=False, suffix='BW')
+                        self.utils.createVideoFromFrames(self._auto_bw_frames_ls, filename)
                         media.append(filename)
-                        filename = 'THERMAL_' + timestamp + '.mp4'
-                        self.utils.createVideoFromFrames(self._auto_tm_frames_ls, 
-                                                    os.path.join(self.utils.getPath(), filename))
+
+                        filename = self.utils.getUniqueName(isImg=False, suffix='THM')
+                        self.utils.createVideoFromFrames(self._auto_tm_frames_ls, filename)
                         media.append(filename)
-                        filename = 'OVERLAY_' + timestamp + '.mp4'
-                        self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, 
-                                                    os.path.join(self.utils.getPath(), filename))
+
+                        filename = self.utils.getUniqueName(isImg=False, suffix='OV')
+                        self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, filename)
                         media.append(filename)
-                        filename = 'AUDIO_' + timestamp + '.wav'
+                        filename = 'AUD_' + timestamp + '.wav'
                         self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
                                                         self.camera.getAudioInfo()['sample_rate'], 
-                                                    os.path.join(self.utils.getPath(), filename))
+                                                        filename)
                         media.append(filename)
 
                     elif(streamType == SoundcamServiceRequest.VIDEO_STREAM):
-                        filename = 'VIDEO_' + timestamp + '.mp4'
-                        self.utils.createVideoFromFrames(self._auto_bw_frames_ls, 
-                                                    os.path.join(self.utils.getPath(), filename))
+                        filename = self.utils.getUniqueName(isImg=False, suffix='BW')
+                        self.utils.createVideoFromFrames(self._auto_bw_frames_ls, filename)
                         media.append(filename)
-                        filename = 'AUDIO_' + timestamp + '.wav'
+                        filename = 'AUD_' + timestamp + '.wav'
                         self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
                                                         self.camera.getAudioInfo()['sample_rate'], 
-                                                    os.path.join(self.utils.getPath(), filename))
+                                                        filename)
                         media.append(filename)
 
                     elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
-                        filename = 'THERMAL_' + timestamp + '.mp4'
-                        self.utils.createVideoFromFrames(self._auto_tm_frames_ls, 
-                                                    os.path.join(self.utils.getPath(), filename))
+                        filename = self.utils.getUniqueName(isImg=False, suffix='THM')
+                        self.utils.createVideoFromFrames(self._auto_tm_frames_ls, filename)
                         media.append(filename)
-                        filename = 'AUDIO_' + timestamp + '.wav'
+                        filename = 'AUD_' + timestamp + '.wav'
                         self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
                                                         self.camera.getAudioInfo()['sample_rate'], 
-                                                    os.path.join(self.utils.getPath(), filename))
+                                                        filename)
                         media.append(filename)
 
                     elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
-                        filename = 'OVERLAY_' + timestamp + '.mp4'
-                        self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, 
-                                                    os.path.join(self.utils.getPath(), filename))
+                        filename = self.utils.getUniqueName(isImg=False, suffix='OV')
+                        self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, filename)
                         media.append(filename)
-                        filename = 'AUDIO_' + timestamp + '.wav'
+                        filename = 'AUD_' + timestamp + '.wav'
                         self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
                                                         self.camera.getAudioInfo()['sample_rate'], 
-                                                    os.path.join(self.utils.getPath(), filename))
+                                                        filename)
                         media.append(filename)
                     
                     if(len(media) > 0):
-                        self.utils.addMetaData(isActionPoint=isActPoint, media=media, pose=pose_info, id=id)
+                        self.utils.addMetaData(isActionPoint=isActPoint, media=media, 
+                                               pose=pose_info, id=id, useMsnPath=True)
                         self.publishCaptureFeedback(self.capture_pub)
                 else:
                     rospy.loginfo('SC| Recording time less the minimum specified. Discarding ...')
@@ -673,7 +684,7 @@ class SoundcamROS(object):
     '''
     -------------------------ACTION SERVER
     '''
-    
+    from diagnostic_msgs.msg import KeyValue
     def executeCB(self, goal: SoundcamGoal):
         rospy.loginfo('SC| Received goal!')
         #save detection/recording parameters
@@ -681,52 +692,49 @@ class SoundcamROS(object):
         self.autoDetect = False
         self.recordTrigger = False #deactivate record triggers
         #extract parameters
-        delay = int(goal.parameters['delay'])
-        numCaptures = int(goal.parameters['numCaptures'])
-        recordTime = float(goal.parameters['recordTime'])
-        media = [int(x) for x in goal.parameters['mediaType'].split('|')]
-        if(SoundcamServiceRequest.ALL not in media):
-            streamType = media
-        else:
-            streamType = SoundcamServiceRequest.ALL
-        msnId = int(goal.parameters['missionId'])
-        msnName = goal.parameters['missionName']
-        wpId = int(goal.parameters['waypointId'])
-        wpX = float(goal.parameters['waypointX'])
-        wpY = float(goal.parameters['waypointY'])
-        wpTheta = float(goal.parameters['waypointTheta'])
-
-        # if(bool(goal.parameters['hasPreset'])):
-        #     wp_preset = Preset(scalingMode=int(goal.parameters['scalingMode']),
-        #                             crest=float(goal.parameters['crest']),
-        #                             distance=float(goal.parameters['distance']),
-        #                             maximum=float(goal.parameters['maximum']),
-        #                             dynamic=float(goal.parameters['dynamic']),
-        #                             maxFrequency=int(goal.parameters['maxFrequency']),
-        #                             minFrequency=int(goal.parameters['minFrequency']))
-        #     if(self.camera.isMeasuring()): #stop measurement if running
-        #         self.camera.stopMeasurement()
-        #     if(self.setPreset(wp_preset)):
-        #         rospy.loginfo('Preset sent!')
-        #         self.curPreset = wp_preset
-        #         self.camera.startMeasurement() #start measurement
-        #         start_t = time.time()
-        #         while(not self.camera.isContinuousStream()):
-        #             rospy.loginfo_throttle(3, "Awaiting camera stream ...")
-        #             if((time.time() - start_t) >= 15.0):
-        #                 rospy.logwarn("Camera stream taking longer to resume \
-        #                                 \nCamera might be in Error!")
-        #                 break
-
+        streamType = SoundcamServiceRequest.ALL
+        rospy.loginfo('Extracting goal parameters ...')
+        for param in goal.parameters:
+            if(param.key == 'uuid'):
+                uuid = param.value
+            if(param.key == 'delay'):
+                delay = int(param.value)
+            if(param.key == 'numCaptures'):
+                numCaptures = int(param.value)
+            if(param.key == 'recordTime'):
+                recordTime = float(param.value) * self._f_mul
+            if(param.key == 'mediaType'):
+                if(param.value != ''):
+                    media = [int(x) for x in param.value.split('|')]
+                    if(SoundcamServiceRequest.ALL not in media):
+                        streamType = media
+            if(param.key == 'missionId'):
+                msnId = int(param.value)
+            if(param.key == 'missionName'):
+                msnName = param.value
+            if(param.key == 'waypointId'):
+                wpId = int(param.value)
+            if(param.key == 'waypointX'):
+                wpX = float(param.value)
+            if(param.key == 'waypointY'):
+                wpY = float(param.value)
+            if(param.key == 'waypointTheta'):
+                wpTheta = float(param.value)
+        
         #prepare directory
-        if(not str(msnId) in self.utils.getPath()):
-            self.utils.prepareDirectory(msnId, msnName)
+        if(self.prevUUID != uuid):
+            self.utils.prepareDirectory(str(msnId), msnName)
+            self.prevUUID = uuid
+            if(self.debug):
+                rospy.loginfo('UUID - %s' % uuid)
+                rospy.loginfo('Newly created path is: %s' % self.utils.getPath(fetchMsnDir=True))
 
         #run while loop
-        rate = rospy.Rate(30)
+        rate = rospy.Rate(15)
         result = False
-        cnt = 0
-        record_start_t = time.time()
+        cnt = 1
+
+        rospy.loginfo('Processing goal ...')
         while(not rospy.is_shutdown()):
             if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
                 #Take Snapshots
@@ -741,7 +749,7 @@ class SoundcamROS(object):
                     rospy.logerr('SC| Snapshot failed!')
                     break
 
-                if(cnt >= numCaptures):
+                if(cnt > numCaptures):
                     result = True
                     break
             elif((recordTime > self.cfg['min_record_time']) and (numCaptures > 0)):
@@ -758,10 +766,13 @@ class SoundcamROS(object):
                                             pose_info=(wpX, wpY, wpTheta), id=wpId)):
                             cnt += 1
                             time.sleep(delay)
-                    else:
-                        rospy.loginfo('SC| Recording in progress ...')
+                    else: # report progress
+                        rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
+                        self.act_feedbk.capture_count = cnt
+                        self.act_feedbk.currentTime.data = rospy.Time.now()
+                        self.act_srvr.publish_feedback(self.act_feedbk)
                     
-                    if(cnt >= numCaptures):
+                    if(cnt > numCaptures):
                         result = True
                         break
             else:
