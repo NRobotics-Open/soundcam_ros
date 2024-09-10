@@ -66,5 +66,5 @@ rest_time: 5.0 #seconds
 pose_topic: '/robot_pose'
 capture_feedback_topic: '/wp/capture/status'
 publish_dev: True
-bw_virt_device: '/dev/video6'
+bw_virt_device: '/dev/video0'
 
