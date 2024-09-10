@@ -456,8 +456,7 @@ class SoundcamROS(object):
                 self.manualTrigger = False
                 self.utils.createVideoFromFrames(self._manual_frames_ls)
                 self.utils.createAudioFromFrames(self._manual_audio_frames_ls, 
-                                                        self.camera.getAudioInfo()['sample_rate'], 
-                                                        filename)
+                                                        self.camera.getAudioInfo()['sample_rate'])
                 self.publishCaptureFeedback(self.capture_pub)
                 if(self.debug):
                     rospy.loginfo_throttle(1, 'SC| Manual Recording success!')
