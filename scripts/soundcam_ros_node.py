@@ -42,7 +42,10 @@ class SoundcamROS(object):
                                 maxFrequency=self.cfg['maxFrequency'],
                                 minFrequency=self.cfg['minFrequency'])
         self.curMediaType = [int(x) for x in '0|1|2|3|4|5'.split('|')] #all
-        self.curCaptureTime = self.cfg['max_record_time'] #how long to record onAutoDetection
+        self._f_mul = self.cfg['frame_multiplier']
+        if(self._f_mul <= 0.0):
+            self._f_mul = 1.0
+        self.curCaptureTime = self.cfg['max_record_time'] * self._f_mul #how long to record onAutoDetection
         self.autoDetect = self.cfg['auto_detect']
         self._isStartup = True
         # Stream recording parameters
@@ -59,9 +62,6 @@ class SoundcamROS(object):
         self.devStr = list()
         self.pubDevStream = self.cfg['publish_dev']
         self.prevUUID = ''
-        self._f_mul = self.cfg['frame_multiplier']
-        if(self._f_mul <= 0.0):
-            self._f_mul = 1.0
 
     def bringUpInterfaces(self):
         rospy.loginfo('Bringing up interfaces ...')
@@ -206,7 +206,7 @@ class SoundcamROS(object):
 
                     if(pub.get_num_connections() > 0): # topic publishing
                         if(self.debug):
-                            rospy.loginfo_throttle(3, 
+                            rospy.loginfo_throttle(10, 
                                     'SC| Video Streaming on Stream type -> {0}'.format(streamType))
                         self.convertPublishCompressedImage(pub=pub, cv_image=img_arr)
             rate.sleep()

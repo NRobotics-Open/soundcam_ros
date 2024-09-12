@@ -568,7 +568,7 @@ class ROSLayerUtils(object):
         if(isImg):
             return ''.join(['IMG_', suffix, '_', today, msn_time, '.jpg'])
         else:
-            return ''.join(['VID_', suffix, '_', today, msn_time, '.mp4'])
+            return ''.join(['VID_', suffix, '_', today, msn_time, '.webm'])
     
     def getPath(self, fetchMsnDir=False):
         if(fetchMsnDir):
@@ -679,7 +679,7 @@ class ROSLayerUtils(object):
         frame_size = (width, height)
 
         # Define the codec and create VideoWriter object
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # You can use other codecs like 'XVID'
+        fourcc = cv2.VideoWriter_fourcc(*'vp80')  # You can use other codecs like 'XVID'
         if(filename is None):
             save_to = os.path.join(self.mediaDir, self.curVid)
         else:
