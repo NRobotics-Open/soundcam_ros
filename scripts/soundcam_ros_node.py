@@ -579,7 +579,7 @@ class SoundcamROS(object):
         resp.results = SoundcamServiceResponse.SUCCESS
         if(req.command_type == SoundcamServiceRequest.CMD_TYPE_CONFIG):
             try:
-                self.curCaptureTime = req.captureTime if (req.captureTime > 0.0) else self.curCaptureTime
+                self.curCaptureTime = req.captureTime #if (req.captureTime > 0.0) else self.curCaptureTime
                 if(req.mediaType != ''):
                     media = [int(x) for x in req.mediaType.split('|')]
                     if(SoundcamServiceRequest.ALL not in media):
