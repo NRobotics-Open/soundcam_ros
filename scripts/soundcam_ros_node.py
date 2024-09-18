@@ -62,7 +62,7 @@ class SoundcamROS(object):
         self.devStr = list()
         self.pubDevStream = self.cfg['publish_dev']
         self.prevUUID = ''
-        self.missionData = MissionData()
+        self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset')
 
     def bringUpInterfaces(self):
         rospy.loginfo('Bringing up interfaces ...')
@@ -207,8 +207,7 @@ class SoundcamROS(object):
 
                     if(pub.get_num_connections() > 0): # topic publishing
                         if(self.debug):
-                            rospy.loginfo_throttle_identical(3, 
-                                    'SC| Video Streaming on Stream type -> {0}'.format(streamType))
+                            rospy.loginfo_once('SC| Video Streaming on Stream type -> {0}'.format(streamType))
                         self.convertPublishCompressedImage(pub=pub, cv_image=img_arr)
             rate.sleep()
     
@@ -472,7 +471,8 @@ class SoundcamROS(object):
         else: # auto recording save
             self.recordTrigger = False
             try:
-                if((time.time() - start_t) >= self.cfg['min_record_time']):
+                auto_elapsed_t = time.time() - start_t
+                if(auto_elapsed_t >= self.cfg['min_record_time']):
                     timestamp = datetime.now().strftime("%H_%M_%S")
                     media = list()
                     if(streamType == SoundcamServiceRequest.ALL):
@@ -528,7 +528,7 @@ class SoundcamROS(object):
                                                pose=pose_info, id=id, useMsnPath=True)
                         self.publishCaptureFeedback(self.capture_pub)
                 else:
-                    rospy.loginfo('SC| Recording time less the minimum specified. Discarding ...')
+                    rospy.loginfo('SC| Recording time %fs is less the minimum specified. Discarding ...' % auto_elapsed_t)
                     self._auto_overlay_frames_ls.clear()
                     self._auto_bw_frames_ls.clear()
                     self._auto_tm_frames_ls.clear()
@@ -595,7 +595,7 @@ class SoundcamROS(object):
                         if(param.key == 'missionId'):
                             self.missionData.id = int(param.value)
                         if(param.key == 'missionName'):
-                            self.missionData.name = int(param.value)
+                            self.missionData.name = param.value
                 
                 if(req.preset.hasPreset): #Configure camera preset
                     if(self.camera.isMeasuring()): #stop measurement if running
@@ -848,6 +848,9 @@ class SoundcamROS(object):
                     self._isStartup = False
                     
             else: 
+                if(self.debug):
+                    e_info = self.camera.getEnergyInfo()
+                    rospy.logwarn_throttle(1, 'Energy| Mean = %f, Std_dev = %f' % (e_info))
                 if(self.autoDetect and ((time.time()-self.restPeriod_t) >= self.cfg['rest_time'])):
                     if(self.camera.hasDetection() and not self.recordTrigger):
                         rospy.loginfo('SC| Starting AUTO recording ...')

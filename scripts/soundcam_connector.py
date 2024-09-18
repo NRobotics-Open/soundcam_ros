@@ -107,6 +107,7 @@ class SoundCamConnector(object):
         self.visualUp = False
         self.connected = False
         self.is_alive = False
+        self.energyInfo = ()
 
         #prepare queues
         self.processes = list()
@@ -910,6 +911,7 @@ class SoundCamConnector(object):
                 with self.spec_semaphore:
                     self.scamUtils.updateSpectrumBuffer(decoded)
                     energy_info = self.scamUtils.computeEnergy(getArray=False)
+                    self.energyInfo = energy_info
                     if(not has_started):
                         if((energy_info[0] > self.cfgObj['mean_energy_thresh']) and 
                         (energy_info[1] > self.cfgObj['energy_std_dev'])):
@@ -1337,6 +1339,9 @@ class SoundCamConnector(object):
     
     def isContinuousStream(self):
         return self.hasStreamData
+    
+    def getEnergyInfo(self):
+        return self.energyInfo
 
     '''
     --------------------------------------------------------------------VISUALIZATION METHODS

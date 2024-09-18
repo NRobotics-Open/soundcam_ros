@@ -55,9 +55,9 @@ frame: 'soundcam'
 ros_debug: True
 auto_detect: True
 detection_xy_offset: 25  #offset for centering the detected blob - NOT USED
-mean_energy_thresh: 20.0
+mean_energy_thresh: 15.0
 energy_std_dev: 10.0
-trigger_time: 2.0 #seconds
+trigger_time: 1.3 #seconds
 max_megabytes: 1000 #Megabytes
 min_record_time: 1.0 #seconds
 max_record_time: 5.0 #seconds
