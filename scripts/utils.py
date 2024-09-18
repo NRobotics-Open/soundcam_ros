@@ -531,7 +531,15 @@ class EuclideanDistTracker:
 '''
 
 from datetime import datetime
+from dataclasses import dataclass
 import yaml
+
+@dataclass
+class MissionData:
+    uuid: str
+    id: int
+    name: str
+
 class ROSLayerUtils(object):
     DataPoint = namedtuple('DataPoint', 'id x y theta media')
     def __init__(self, debug=False) -> None:

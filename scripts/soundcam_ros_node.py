@@ -20,7 +20,7 @@ from diagnostic_msgs.msg import KeyValue
 import actionlib, threading, numpy as np
 from cv_bridge import CvBridge
 from soundcam_protocol import Features
-from utils import ROSLayerUtils
+from utils import ROSLayerUtils, MissionData
 from datetime import datetime
 import cv2
 import pyfakewebcam as pf
@@ -62,6 +62,7 @@ class SoundcamROS(object):
         self.devStr = list()
         self.pubDevStream = self.cfg['publish_dev']
         self.prevUUID = ''
+        self.missionData = MissionData()
 
     def bringUpInterfaces(self):
         rospy.loginfo('Bringing up interfaces ...')
@@ -206,7 +207,7 @@ class SoundcamROS(object):
 
                     if(pub.get_num_connections() > 0): # topic publishing
                         if(self.debug):
-                            rospy.loginfo_throttle(10, 
+                            rospy.loginfo_throttle_identical(3, 
                                     'SC| Video Streaming on Stream type -> {0}'.format(streamType))
                         self.convertPublishCompressedImage(pub=pub, cv_image=img_arr)
             rate.sleep()
@@ -588,9 +589,13 @@ class SoundcamROS(object):
                         self.curMediaType = SoundcamServiceRequest.ALL
                 # Get Extra Parameters
                 if(len(req.extras) > 0):
-                    dt:KeyValue = req.extras[0]
-                    if(dt.key != '' and dt.value != ''):
-                        self.utils.prepareDirectory(int(dt.key), dt.value)
+                    for param in req.extras:
+                        if(param.key == 'uuid'):
+                            self.missionData.uuid = param.value
+                        if(param.key == 'missionId'):
+                            self.missionData.id = int(param.value)
+                        if(param.key == 'missionName'):
+                            self.missionData.name = int(param.value)
                 
                 if(req.preset.hasPreset): #Configure camera preset
                     if(self.camera.isMeasuring()): #stop measurement if running
@@ -683,6 +688,15 @@ class SoundcamROS(object):
     '''
     -------------------------ACTION SERVER
     '''
+
+    def prepareMissionDirectory(self):
+        if(self.prevUUID != self.missionData.uuid):
+            self.utils.prepareDirectory(str(self.missionData.id), self.missionData.name)
+            self.prevUUID = self.missionData.uuid
+            if(self.debug):
+                rospy.loginfo('UUID - %s' % self.missionData.uuid)
+                rospy.loginfo('Newly created path is: %s' % self.utils.getPath(fetchMsnDir=True))
+
     from diagnostic_msgs.msg import KeyValue
     def executeCB(self, goal: SoundcamGoal):
         rospy.loginfo('SC| Received goal!')
@@ -695,7 +709,7 @@ class SoundcamROS(object):
         rospy.loginfo('Extracting goal parameters ...')
         for param in goal.parameters:
             if(param.key == 'uuid'):
-                uuid = param.value
+                self.missionData.uuid = param.value
             if(param.key == 'delay'):
                 delay = int(param.value)
             if(param.key == 'numCaptures'):
@@ -708,9 +722,9 @@ class SoundcamROS(object):
                     if(SoundcamServiceRequest.ALL not in media):
                         streamType = media
             if(param.key == 'missionId'):
-                msnId = int(param.value)
+                self.missionData.id = int(param.value)
             if(param.key == 'missionName'):
-                msnName = param.value
+                self.missionData.name = param.value
             if(param.key == 'waypointId'):
                 wpId = int(param.value)
             if(param.key == 'waypointX'):
@@ -721,12 +735,7 @@ class SoundcamROS(object):
                 wpTheta = float(param.value)
         
         #prepare directory
-        if(self.prevUUID != uuid):
-            self.utils.prepareDirectory(str(msnId), msnName)
-            self.prevUUID = uuid
-            if(self.debug):
-                rospy.loginfo('UUID - %s' % uuid)
-                rospy.loginfo('Newly created path is: %s' % self.utils.getPath(fetchMsnDir=True))
+        self.prepareMissionDirectory()
 
         #run while loop
         rate = rospy.Rate(15)
@@ -847,13 +856,17 @@ class SoundcamROS(object):
                         record_start_t = time.time()
 
                     if(self.camera.hasDetection() and self.recordTrigger and 
-                       ((time.time()-record_start_t)) >= self.curCaptureTime):
-                        rospy.loginfo('SC| Saving AUTO recording [1] ...')
+                       ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
+                        rospy.loginfo('SC| Saving AUTO recording [Autodetect| Timeout] ...')
+                        #prepare directory
+                        self.prepareMissionDirectory()
                         self._saveRecording(auto=True, start_t=record_start_t, pose_info=self.robotPose)
                         self.restPeriod_t = time.time()
                     
                     if(not self.camera.hasDetection() and self.recordTrigger):
-                        rospy.loginfo('SC| Saving AUTO recording [2] ...')
+                        rospy.loginfo('SC| Saving AUTO recording [Autodetect| Deactivation] ...')
+                        #prepare directory
+                        self.prepareMissionDirectory()
                         self._saveRecording(auto=True, start_t=record_start_t, pose_info=self.robotPose)
                         self.restPeriod_t = time.time() 
 
