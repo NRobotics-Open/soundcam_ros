@@ -34,7 +34,8 @@ class SoundcamROS(object):
         self.utils = ROSLayerUtils(debug=self.debug)
         
         #operational parameters
-        self.curPreset = Preset(scalingMode=self.cfg['scalingMode'],
+        self.curPreset = Preset(presetName='DEFAULT',
+                                scalingMode=self.cfg['scalingMode'],
                                 crest=self.cfg['crest'],
                                 distance=self.cfg['distance'],
                                 maximum=self.cfg['maximum'],
@@ -81,6 +82,7 @@ class SoundcamROS(object):
             self.statusPublish(self.status_pub, self.camera.getStatus)
             self.bridge = CvBridge()
             self.detection_pub = rospy.Publisher(self.cfg['frame'] + '/detection', SoundcamDetection, queue_size=5)
+            self.preset_pub = rospy.Publisher(self.cfg['frame'] + '/preset', Preset, queue_size=5)
             self.capture_pub = rospy.Publisher(self.cfg['capture_feedback_topic'], Bool, queue_size=1)
             
             thread_grp = list()
@@ -313,6 +315,11 @@ class SoundcamROS(object):
             self.detection_pub.publish(msg)
             if(self.debug):
                 rospy.loginfo_throttle(3, 'SC| Published detection status')
+    
+    ''' Publishes current camera preset '''
+    def publishPreset(self):
+        if(self.preset_pub.get_num_connections() > 0):
+            self.preset_pub.publish(self.curPreset)
 
 
     def publishCaptureFeedback(self, pub:rospy.Publisher):
@@ -334,6 +341,8 @@ class SoundcamROS(object):
     -------------------------other METHODS
     '''
     def setPreset(self, preset:Preset):
+        if(preset.presetName == self.curPreset.presetName):
+            return True
         return self.camera.updatePreset(mode=int(preset.scalingMode),
                                         distance=int(preset.distance),
                                         minFreq=int(preset.minFrequency),
@@ -344,16 +353,16 @@ class SoundcamROS(object):
                 
     def getRobotPose(self):
         try:
-            msg:Pose = rospy.wait_for_message(self.cfg['pose_topic'], Pose, rospy.Duration(1.0))
-            _, _, theta = self.utils.quaternionToEulerDegrees(msg.orientation.w, 
+            msg:Pose = rospy.wait_for_message(self.cfg['pose_topic'], Pose, rospy.Duration(4.0))
+            orientation_eu = self.utils.quaternionToEulerDegrees(msg.orientation.w, 
                                                             msg.orientation.x,
                                                             msg.orientation.y,
                                                             msg.orientation.z)
             if(self.debug):
                 rospy.loginfo_throttle(3, 'SC| Got robot pose: X:{0}, Y:{1}, Theta:{2}'.format(
-                    msg.position.x, msg.position.y, theta
+                    msg.position.x, msg.position.y, orientation_eu[2]
                 ))
-            return (msg.position.x, msg.position.y, theta)
+            return (msg.position.x, msg.position.y, orientation_eu[2])
         except Exception as e:
             return (0.0, 0.0, 90.0)
         
@@ -379,6 +388,7 @@ class SoundcamROS(object):
         6 -> [BW Image, Thermal Image, Overlayed Image]
     '''
     def _takeSnapshot(self, streamType=SoundcamServiceRequest.OVERLAY_STREAM, extras=None):
+        isActPoint = True
         if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
             frame = self._getFrame(self.camera.getBWVideo)
             if(frame is None):
@@ -440,7 +450,7 @@ class SoundcamROS(object):
                 return False
         
         if((extras is not None) and (len(media) > 0)):
-            self.utils.addMetaData(media=media, pose=(extras[1:]), id=extras[0], 
+            self.utils.addMetaData(media=media,isActionPoint=isActPoint, pose=(extras[1:]), id=extras[0], 
                                    useMsnPath=True)
         self.publishCaptureFeedback(self.capture_pub)
         if(self.debug):
@@ -538,12 +548,12 @@ class SoundcamROS(object):
                 self._auto_bw_frames_ls.clear()
                 self._auto_tm_frames_ls.clear()
                 self._auto_audio_frames_ls.clear()
-                rospy.logerr('SC| Error AUTOMATICALLY saving streams: ', e)
+                print('SC| Error AUTOMATICALLY saving streams: ', e)
                 if(self.debug):
-                    rospy.logerr_throttle(1, 'SC| Auto Recording failure!')
+                    rospy.logerr('SC| Auto Recording failure!')
                 return False
             if(self.debug):
-                rospy.loginfo_throttle(1, 'SC| Auto Recording success!')
+                rospy.loginfo('SC| Auto Recording success!')
             return True
 
     
@@ -596,27 +606,31 @@ class SoundcamROS(object):
                             self.missionData.id = int(param.value)
                         if(param.key == 'missionName'):
                             self.missionData.name = param.value
-                
+
                 if(req.preset.hasPreset): #Configure camera preset
-                    if(self.camera.isMeasuring()): #stop measurement if running
-                        self.camera.stopMeasurement()
-                    if(self.setPreset(req.preset)):
-                        rospy.loginfo('Preset sent!')
-                        self.curPreset = req.preset
-                        self.camera.startMeasurement() #start measurement
-                        start_t = time.time()
-                        while(not self.camera.isContinuousStream()):
-                            rospy.loginfo_throttle(3, "Awaiting camera stream ...")
-                            if((time.time() - start_t) >= 15.0):
-                                rospy.logwarn("Camera stream taking longer to resume \
-                                              \nCamera might be in Error!")
-                                break
+                    if(req.preset.presetName != self.curPreset.presetName):
+                        if(self.camera.isMeasuring()): #stop measurement if running
+                            self.camera.stopMeasurement()
+                        if(self.setPreset(req.preset)):
+                            rospy.loginfo('Preset sent!')
+                            self.curPreset = req.preset
+                            self.camera.startMeasurement() #start measurement
+                            start_t = time.time()
+                            while(not self.camera.isContinuousStream()):
+                                rospy.loginfo_throttle(3, "Awaiting camera stream ...")
+                                if((time.time() - start_t) >= 15.0):
+                                    rospy.logwarn("Camera stream taking longer to resume \
+                                                \nCamera might be in Error!")
+                                    break
+                        else:
+                            rospy.logerr('Unable to send preset!')
+                            if(not self.camera.isMeasuring()):
+                                self.setPreset(self.curPreset)
+                                self.camera.startMeasurement()
+                            resp.results = SoundcamServiceResponse.FAIL
                     else:
-                        rospy.logerr('Unable to send preset!')
-                        if(not self.camera.isMeasuring()):
-                            self.setPreset(self.curPreset)
-                            self.camera.startMeasurement()
-                        resp.results = SoundcamServiceResponse.FAIL
+                        if(self.debug):
+                            rospy.loginfo("%s is already set!" % self.curPreset.presetName)
             except Exception as e:
                 rospy.logerr("Error occured! ", e)
                 resp.results = SoundcamServiceResponse.FAIL
@@ -836,6 +850,7 @@ class SoundcamROS(object):
         record_start_t = time.time()
         self.restPeriod_t = time.time()
         firstrun = True
+        rP = None
         while(not rospy.is_shutdown()):
             if(self._isStartup):
                 if(self.attemptConnection()):
@@ -851,29 +866,31 @@ class SoundcamROS(object):
                 if(self.debug):
                     e_info = self.camera.getEnergyInfo()
                     rospy.logwarn_throttle(1, 'Energy| Mean = %f, Std_dev = %f' % (e_info))
-                if(self.autoDetect and ((time.time()-self.restPeriod_t) >= self.cfg['rest_time'])):
-                    if(self.camera.hasDetection() and not self.recordTrigger):
-                        rospy.loginfo('SC| Starting AUTO recording ...')
-                        self.recordTrigger = True
-                        self.robotPose = self.getRobotPose()
-                        record_start_t = time.time()
+                if(self.missionData.id != 0): #only perform auto-detection when explicitly required
+                    if(self.autoDetect and ((time.time()-self.restPeriod_t) >= self.cfg['rest_time'])):
+                        if(self.camera.hasDetection() and not self.recordTrigger):
+                            rospy.loginfo('SC| Starting AUTO recording ...')
+                            self.recordTrigger = True
+                            rP = self.getRobotPose()
+                            record_start_t = time.time()
 
-                    if(self.camera.hasDetection() and self.recordTrigger and 
-                       ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
-                        rospy.loginfo('SC| Saving AUTO recording [Autodetect| Timeout] ...')
-                        #prepare directory
-                        self.prepareMissionDirectory()
-                        self._saveRecording(auto=True, start_t=record_start_t, pose_info=self.robotPose)
-                        self.restPeriod_t = time.time()
-                    
-                    if(not self.camera.hasDetection() and self.recordTrigger):
-                        rospy.loginfo('SC| Saving AUTO recording [Autodetect| Deactivation] ...')
-                        #prepare directory
-                        self.prepareMissionDirectory()
-                        self._saveRecording(auto=True, start_t=record_start_t, pose_info=self.robotPose)
-                        self.restPeriod_t = time.time() 
+                        if(self.camera.hasDetection() and self.recordTrigger and 
+                        ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
+                            rospy.loginfo('SC| Saving AUTO recording [Autodetect| Timeout] ...')
+                            #prepare directory
+                            self.prepareMissionDirectory()
+                            self._saveRecording(auto=True, start_t=record_start_t, pose_info=rP)
+                            self.restPeriod_t = time.time()
+                        
+                        if(not self.camera.hasDetection() and self.recordTrigger):
+                            rospy.loginfo('SC| Saving AUTO recording [Autodetect| Deactivation] ...')
+                            #prepare directory
+                            self.prepareMissionDirectory()
+                            self._saveRecording(auto=True, start_t=record_start_t, pose_info=rP)
+                            self.restPeriod_t = time.time() 
 
             self.publishDetection(self.camera.hasDetection(), self.camera.getBlobData())
+            self.publishPreset()
             if(not self.camera.isAlive()):
                 rospy.logwarn('Camera disconnected!')
                 rospy.loginfo('Reconnection attempt in 2 seconds ...')

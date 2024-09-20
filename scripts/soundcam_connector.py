@@ -107,7 +107,7 @@ class SoundCamConnector(object):
         self.visualUp = False
         self.connected = False
         self.is_alive = False
-        self.energyInfo = ()
+        self.energyInfo = (0.0, 0.0)
 
         #prepare queues
         self.processes = list()

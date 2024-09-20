@@ -3,6 +3,7 @@ uint8 SCALING_MODE_AUTO = 1
 uint8 SCALING_MODE_SMART = 2
 uint8 scalingMode #the value will be either 0, 1 or 2 (above)
 
+string presetName
 float32 crest #5-15
 int32 distance # approx. distance of sound source (<=3500mm)
 float32 maximum  # maximum threshold (fixed scaling)

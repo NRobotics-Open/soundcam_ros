@@ -622,7 +622,7 @@ class ROSLayerUtils(object):
         return math.sqrt(math.pow((coords[0] - 320), 2) + 
                          math.pow((coords[1] - 240), 2))
     
-    def quaternionToEulerDegrees(w, x, y, z):
+    def quaternionToEulerDegrees(self, w, x, y, z):
         """
             Convert a quaternion into Euler angles (roll, pitch, yaw) in degrees.
 
@@ -648,11 +648,7 @@ class ROSLayerUtils(object):
         yaw_z = np.arctan2(t3, t4)
 
         # Convert radians to degrees
-        roll_x = np.degrees(roll_x)
-        pitch_y = np.degrees(pitch_y)
-        yaw_z = np.degrees(yaw_z)
-
-        return roll_x, pitch_y, yaw_z
+        return np.degrees([roll_x, pitch_y, yaw_z]).tolist()
 
     def _calculateMemUsage(self, frame_list:list):
         # Calculate the total memory usage of the frames in Megabytes
@@ -748,4 +744,3 @@ class ROSLayerUtils(object):
         # Perform blending and limit pixel values to 0-255 (convert to 8-bit)
         b1i = cv2.convertScaleAbs(img_arr2*(1-alpha2i) + img_arr1*alpha2i)
         return b1i
-        
