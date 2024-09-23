@@ -587,7 +587,8 @@ class ROSLayerUtils(object):
     def addMetaData(self, media, info, isActionPoint=False, id=None, useMsnPath=False):
         assignedId = self.localId if (id is None) else id
         obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
-                                            info[0], info[1], info[2], media, info[3][0], info[3][1])
+                                            float(info[0]), float(info[1]), float(info[2]), 
+                                            media, float(info[3][0]), float(info[3][1]))
         path = self.getPath(fetchMsnDir=useMsnPath)
         if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
             with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
