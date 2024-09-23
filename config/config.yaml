@@ -62,7 +62,7 @@ max_megabytes: 1000 #Megabytes
 min_record_time: 1.0 #seconds
 max_record_time: 5.0 #seconds
 frame_multiplier: 2.0 #for video recording timing
-rest_time: 5.0 #seconds
+rest_dist: 3.0 #meters
 pose_topic: '/robot_pose'
 capture_feedback_topic: '/wp/capture/status'
 publish_dev: True

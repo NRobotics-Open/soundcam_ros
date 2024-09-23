@@ -541,7 +541,7 @@ class MissionData:
     name: str
 
 class ROSLayerUtils(object):
-    DataPoint = namedtuple('DataPoint', 'id x y theta media')
+    DataPoint = namedtuple('DataPoint', 'id x y theta media energy std_dev')
     def __init__(self, debug=False) -> None:
         self.mediaDir = os.path.expanduser("~") + '/current'
         if(not os.path.exists(self.mediaDir)):
@@ -584,10 +584,10 @@ class ROSLayerUtils(object):
         else:
             return self.mediaDir
     
-    def addMetaData(self, media, pose, isActionPoint=False, id=None, useMsnPath=False):
+    def addMetaData(self, media, info, isActionPoint=False, id=None, useMsnPath=False):
         assignedId = self.localId if (id is None) else id
         obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
-                                            pose[0], pose[1], pose[2], media)
+                                            info[0], info[1], info[2], media, info[3][0], info[3][1])
         path = self.getPath(fetchMsnDir=useMsnPath)
         if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
             with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
@@ -649,6 +649,10 @@ class ROSLayerUtils(object):
 
         # Convert radians to degrees
         return np.degrees([roll_x, pitch_y, yaw_z]).tolist()
+    
+    def calcEuclidDistance(self, pose_a:list, pose_b:list):
+        return math.sqrt((math.pow((pose_a[0] - pose_b[0]), 2)) + 
+                         (math.pow((pose_a[1] - pose_b[1]), 2)))
 
     def _calculateMemUsage(self, frame_list:list):
         # Calculate the total memory usage of the frames in Megabytes

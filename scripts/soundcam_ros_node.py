@@ -64,6 +64,7 @@ class SoundcamROS(object):
         self.pubDevStream = self.cfg['publish_dev']
         self.prevUUID = ''
         self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset')
+        self.curPose = [0.0, 0.0, 90.0]
 
     def bringUpInterfaces(self):
         rospy.loginfo('Bringing up interfaces ...')
@@ -122,6 +123,8 @@ class SoundcamROS(object):
             thread_grp.append(threading.Thread(target=self.spectrumPublishing, 
                                       args=[self.spectrum_pub, self.camera.getSpectrum], 
                                       daemon=True))
+            
+            rospy.Subscriber(self.cfg['pose_topic'], Pose, self.subRobotPose)
             
             srvr = rospy.Service('SoundCameraServiceServer', SoundcamService, self.serviceCB)
             self.act_srvr = actionlib.SimpleActionServer("SoundCameraActionServer", SoundcamAction, 
@@ -321,7 +324,6 @@ class SoundcamROS(object):
         if(self.preset_pub.get_num_connections() > 0):
             self.preset_pub.publish(self.curPreset)
 
-
     def publishCaptureFeedback(self, pub:rospy.Publisher):
         pub.publish(Bool(True))
         if(self.debug):
@@ -351,20 +353,20 @@ class SoundcamROS(object):
                                         crest=float(preset.crest),
                     maximum=float(preset.maximum) if (float(preset.maximum) > 0.0) else None)
                 
-    def getRobotPose(self):
+    def subRobotPose(self, msg:Pose):
         try:
-            msg:Pose = rospy.wait_for_message(self.cfg['pose_topic'], Pose, rospy.Duration(4.0))
             orientation_eu = self.utils.quaternionToEulerDegrees(msg.orientation.w, 
                                                             msg.orientation.x,
                                                             msg.orientation.y,
                                                             msg.orientation.z)
-            if(self.debug):
-                rospy.loginfo_throttle(3, 'SC| Got robot pose: X:{0}, Y:{1}, Theta:{2}'.format(
-                    msg.position.x, msg.position.y, orientation_eu[2]
-                ))
-            return (msg.position.x, msg.position.y, orientation_eu[2])
+            # if(self.debug):
+            #     rospy.loginfo_throttle(3, 'SC| Got robot pose: X:{0}, Y:{1}, Theta:{2}'.format(
+            #         msg.position.x, msg.position.y, orientation_eu[2]
+            #     ))
+            self.curPose = [msg.position.x, msg.position.y, orientation_eu[2]]
         except Exception as e:
-            return (0.0, 0.0, 90.0)
+            rospy.logerr(e)
+
         
     '''
     -------------------------SERVICE SERVER
@@ -460,7 +462,7 @@ class SoundcamROS(object):
     ''' Save recorded stream and returns True/False'''
     def _saveRecording(self, auto=False, start_t=time.time(), 
                        streamType=SoundcamServiceRequest.ALL,
-                       isActPoint=False, pose_info=None, id=None):
+                       isActPoint=False, info=None, id=None):
         if(not auto): # manual recording save
             try:
                 self.manualTrigger = False
@@ -535,7 +537,7 @@ class SoundcamROS(object):
                     
                     if(len(media) > 0):
                         self.utils.addMetaData(isActionPoint=isActPoint, media=media, 
-                                               pose=pose_info, id=id, useMsnPath=True)
+                                               info=info, id=id, useMsnPath=True)
                         self.publishCaptureFeedback(self.capture_pub)
                 else:
                     rospy.loginfo('SC| Recording time %fs is less the minimum specified. Discarding ...' % auto_elapsed_t)
@@ -755,7 +757,7 @@ class SoundcamROS(object):
         rate = rospy.Rate(15)
         result = False
         cnt = 1
-
+        energyInfo = (0.0, 0.0)
         rospy.loginfo('Processing goal ...')
         while(not rospy.is_shutdown()):
             if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
@@ -775,6 +777,9 @@ class SoundcamROS(object):
                     result = True
                     break
             elif((recordTime > self.cfg['min_record_time']) and (numCaptures > 0)):
+                tmp_e = self.camera.getEnergy()
+                if(tmp_e[0] > energyInfo[0]):
+                    energyInfo = tmp_e
                 #Make Recordings
                 if(not self.recordTrigger): #start recording
                     self.recordTrigger = True
@@ -785,8 +790,9 @@ class SoundcamROS(object):
                         if(self._saveRecording(auto=True, isActPoint=True, 
                                             streamType=streamType,
                                             start_t=record_start_t, 
-                                            pose_info=(wpX, wpY, wpTheta), id=wpId)):
+                                            info=(wpX, wpY, wpTheta, energyInfo), id=wpId)):
                             cnt += 1
+                            energyInfo = (0.0, 0.0)
                             time.sleep(delay)
                     else: # report progress
                         rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
@@ -810,7 +816,7 @@ class SoundcamROS(object):
         else:
             self.act_srvr.set_succeeded(self.act_result)
         #restore detection settings and reset rest period
-        self.restPeriod_t = time.time()
+        self.restDist = time.time()
         self.autoDetect = autoDetectVar
 
 
@@ -848,9 +854,9 @@ class SoundcamROS(object):
     def run(self):
         rate = rospy.Rate(40)
         record_start_t = time.time()
-        self.restPeriod_t = time.time()
+        prevPose = [0.0, 0.0, 0.0]
         firstrun = True
-        rP = None
+        energyInfo = (0.0, 0.0)
         while(not rospy.is_shutdown()):
             if(self._isStartup):
                 if(self.attemptConnection()):
@@ -867,27 +873,33 @@ class SoundcamROS(object):
                     e_info = self.camera.getEnergyInfo()
                     rospy.logwarn_throttle(1, 'Energy| Mean = %f, Std_dev = %f' % (e_info))
                 if(self.missionData.id != 0): #only perform auto-detection when explicitly required
-                    if(self.autoDetect and ((time.time()-self.restPeriod_t) >= self.cfg['rest_time'])):
-                        if(self.camera.hasDetection() and not self.recordTrigger):
-                            rospy.loginfo('SC| Starting AUTO recording ...')
-                            self.recordTrigger = True
-                            rP = self.getRobotPose()
-                            record_start_t = time.time()
+                    if(self.autoDetect):
+                        if(self.camera.hasDetection()):
+                            if(not self.recordTrigger and (self.utils.calcEuclidDistance(prevPose, self.curPose) >= self.cfg['rest_dist'])):
+                                rospy.loginfo('SC| Starting AUTO recording ...')
+                                self.recordTrigger = True
+                                energyInfo = (0.0, 0.0)
+                                record_start_t = time.time()
+                                prevPose = self.curPose
 
-                        if(self.camera.hasDetection() and self.recordTrigger and 
-                        ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
-                            rospy.loginfo('SC| Saving AUTO recording [Autodetect| Timeout] ...')
-                            #prepare directory
-                            self.prepareMissionDirectory()
-                            self._saveRecording(auto=True, start_t=record_start_t, pose_info=rP)
-                            self.restPeriod_t = time.time()
+                            if(self.recordTrigger and ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
+                                rospy.loginfo('SC| Saving AUTO recording [Autodetect| Timeout] ...')
+                                #prepare directory
+                                self.prepareMissionDirectory()
+                                self._saveRecording(auto=True, start_t=record_start_t, info=(self.curPose, energyInfo))
+                                self.restDist = time.time()
                         
                         if(not self.camera.hasDetection() and self.recordTrigger):
                             rospy.loginfo('SC| Saving AUTO recording [Autodetect| Deactivation] ...')
                             #prepare directory
                             self.prepareMissionDirectory()
-                            self._saveRecording(auto=True, start_t=record_start_t, pose_info=rP)
-                            self.restPeriod_t = time.time() 
+                            self._saveRecording(auto=True, start_t=record_start_t, info=(self.curPose, energyInfo))
+                            self.restDist = time.time() 
+                        
+                        if(self.recordTrigger): #get energy info during recording
+                            e_info = self.camera.getEnergyInfo()
+                            if(e_info[0] > energyInfo[0]):
+                                energyInfo = e_info
 
             self.publishDetection(self.camera.hasDetection(), self.camera.getBlobData())
             self.publishPreset()
