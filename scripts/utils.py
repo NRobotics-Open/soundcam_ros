@@ -11,6 +11,9 @@ from collections import namedtuple
 NFFT = 4096
 NOVERLAP = 128
 
+SignalInfo = namedtuple('SignalInfo', 
+                        'mean std_dev hi_thresh current lo_thresh snr pre_activation, detection')
+
 class SoundUtils():
     class BufferTypes(Enum):
         AUDIO = 0
@@ -26,8 +29,13 @@ class SoundUtils():
         
 
     def __init__(self, window=500, detectionWin=50, t=10, 
-                 minFreq=0, maxFreq=1e5, acFreq=50, 
-                 scalingMode:ScalingMode=ScalingMode.OFF) -> None:
+                 minFreq=0, maxFreq=1e5, acFreq=50, specFreq=11,
+                 scalingMode:ScalingMode=ScalingMode.OFF, 
+                 dynamic_thresh_f=8,
+                 low_thresh_f=1.5,
+                 smoothing_win=5,
+                 trigger_duration=2.0, debug=False) -> None:
+        self.debug = debug
         self.ax = None
         self.image = None
         self.isAudioBufferInit = False
@@ -40,6 +48,7 @@ class SoundUtils():
         self.acWindow = self.ts * acFreq
         self.audlength = int(self.ts * self.sampleFreq * 2048)
         self.acslength = int(self.acWindow * 3072)
+        self.speclen = int(self.ts * 0.5 * specFreq * 1023)
         self.window = window
         self.minFreq = minFreq
         self.maxFreq = maxFreq
@@ -56,6 +65,25 @@ class SoundUtils():
         self.blobData = []
         self.hasDetection = False
 
+        #SIGNAL Detection
+        '''
+        - Frequency content filtering
+        - Signal smoothing over x-window samples
+        - Dynamic Thresholding
+        - Hysteresis
+        - Temporal Consistency
+        '''
+        self.dyn_threshold_factor = dynamic_thresh_f #1.5 Multiplier for dynamic threshold
+        self.low_threshold_factor = low_thresh_f # Lower threshold for hysteresis
+        self.previous_detection = False
+        self.pre_activation = False
+        self.smoothing_window = smoothing_win  # Sliding window size for energy smoothing
+        self.trigger_time = time.time()
+        self.trigger_duration = trigger_duration #seconds
+        self.energy_sz = 1023 - self.smoothing_window + 1
+        self.sig_data:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.isReady = False
+
     '''
         Class member variable getters
     '''
@@ -68,14 +96,11 @@ class SoundUtils():
     def p_getACLen(self):
         return self.acslength
     
+    def p_getSpecLen(self):
+        return self.speclen
+    
     def p_getFrequencies(self):
         return self.frequencies
-
-    ''' Detection updating and fetching '''
-    def p_getDetection(self):
-        return self.hasDetection
-    def updateDetection(self, flag:bool):
-        self.hasDetection = flag
     
     ''' Methods for updating and fetching blob data '''
     def p_getBlobData(self):
@@ -124,14 +149,10 @@ class SoundUtils():
     '''
     def updateAudioBuffer(self, data:list):
         try:
-            buffer:np.array = (data[2] + data[3]) #focused audio
-            buffer.shape = -1, 1 #reshape to (2048, 1)
-            shift = len(buffer)
-            #self.sems[self.BufferTypes.AUDIO.value].acquire()
-            newaudioBuffer = np.roll(self.audioBuffer, -shift, axis=0)
-            newaudioBuffer[-shift:] = buffer
-            self.audioBuffer[: , :] = newaudioBuffer[:, :]
-            #self.sems[self.BufferTypes.AUDIO.value].release()
+            #focuse audio
+            buffer = (data[2] + data[3]).reshape(-1, 1) #reshape to (2048, 1)
+            self.audioBuffer[:-2048, :] = self.audioBuffer[2048:, :]
+            self.audioBuffer[-2048:, :] = buffer
         except Exception as ex:
             print(f"Exception occured: {ex}")
     
@@ -141,24 +162,20 @@ class SoundUtils():
     '''
         Updates the ringbuffer -> Spectrum Stream
     '''
-    def updateSpectrumBuffer(self, data:list):
-        #self.sems[self.BufferTypes.GLOBAL_SPECTRUM.value].acquire()
-        newGBuffer = np.roll(self.specGlobalBuffer, -1, axis=0)
-        newGBuffer[-1, : ] = data[2][ : ]
-        self.specGlobalBuffer[:, :] = newGBuffer[:, :]
-        #self.sems[self.BufferTypes.GLOBAL_SPECTRUM.value].release()
-
-        #self.sems[self.BufferTypes.LOCAL_SPECTRUM.value].acquire()
-        newLBuffer = np.roll(self.specLocalBuffer, -1, axis=0)
-        newLBuffer[-1, :] = data[3][ : ]
-        self.specLocalBuffer[:, :] = newLBuffer[:, :]
-        #self.sems[self.BufferTypes.LOCAL_SPECTRUM.value].release()
-
-        self.computeEnergy()
+    def updateSpectrumBuffer(self, data:list, uselocal=True):
+        if(not uselocal):
+            self.specGlobalBuffer[:-1, :] = self.specGlobalBuffer[1:, :]
+            self.specGlobalBuffer[-1, :] = data[2][:]
+        else:
+            self.specLocalBuffer[:-1, :] = self.specLocalBuffer[1:, :]
+            self.specLocalBuffer[-1, :] = data[3][:]
+        self.computeEnergy(uselocal=uselocal)
 
         self.cnt += 1
         if(self.cnt > self.window):
             self.cnt = self.window
+        if(self.cnt > self.detectionWindow * 2):
+            self.isReady = True
     
     def getSpectrumBuffer(self, global_data=True):
         if(global_data):
@@ -184,33 +201,25 @@ class SoundUtils():
                     self.crestVal = (self.crestVal - self.dynScale) + 3.1
             self.modeChange = False
 
-        #self.sems[self.BufferTypes.ACOUSTIC.value].acquire()
-        newacBuffer = np.roll(self.acousticBuffer, -3072, axis=0)
+        self.acousticBuffer[:-3072, :] = self.acousticBuffer[3072:, :]
         if(self.useRunningMax):
             self.maxScale = np.max(data[1])
             if(self.scalingMode == self.ScalingMode.SMART):
                 self.maxScale = self.crestVal + np.average(data[1])
             self.minScale = self.maxScale - self.dynScale
-        dt = data[1].flatten()
-        dt.shape = -1, 1
-        #push raw to temporal buffer
-        # self.temporalBuffer = np.roll(self.temporalBuffer, -3072, axis=0)
-        # self.temporalBuffer[-3072:] = dt[:]
+        dt = data[1].reshape(-1, 1)
         try:
             dt_norm = (dt - self.minScale)/(self.maxScale - self.minScale)
-            dt_norm[np.where(dt_norm < 0.0)] = 0.0
-            dt_norm[np.where(dt_norm > 1.0)] = 1.0
+            # dt_norm[np.where(dt_norm < 0.0)] = 0.0
+            # dt_norm[np.where(dt_norm > 1.0)] = 1.0
+            dt_norm = np.clip(dt_norm, 0.0, 1.0)
         except RuntimeWarning as e:
             return None
 
-        newacBuffer[-3072:] = dt_norm[:]
-        self.acousticBuffer[: , :] = newacBuffer[:, :]
-        #self.sems[self.BufferTypes.ACOUSTIC.value].release()
-        self.accnt +=1
-        if(self.accnt > self.acWindow):
-            self.accnt = self.acWindow
-        # print(f"max: {self.maxScale}, min: {self.minScale}, \
-        #       dynamic: {self.dynScale}, crestVal: {self.crestVal}")
+        self.acousticBuffer[-3072:, :] = dt_norm
+        # self.accnt +=1
+        # if(self.accnt > self.acWindow):
+        #     self.accnt = self.acWindow
         return dt_norm.reshape(48, 64) #return a copy
     
     def getAcousticBuffer(self):
@@ -219,11 +228,13 @@ class SoundUtils():
     '''
         Sets and returns the scaling mode for acoustic data
     '''
-    def setScalingMode(self, mode: ScalingMode, dynamic=3.1, max=None, crest=5):
+    def setScalingMode(self, mode: ScalingMode, dynamic=3.1, max=None, crest=5, minF=0, maxF=1e5):
         self.scalingMode = mode
         self.dynScale = dynamic if(dynamic >= 3.1) else 3.1
         self.maxScale = max
         self.crestVal = 5.0 if(crest < 5.0) else 15.0 if(crest > 15.0) else crest 
+        self.minFreq = minF
+        self.maxFreq = maxF
         self.modeChange = True
 
     def getScalingMode(self):
@@ -232,28 +243,114 @@ class SoundUtils():
     '''
         Calculates the cummulative energy in the given window
     '''
-    def computeEnergy(self, uselocal=True, getArray=True)->(float):
-        if(uselocal):
-            arr = self.specLocalBuffer[-self.detectionWindow: , :]
-        else:
-            arr = self.specGlobalBuffer[-self.detectionWindow: , :]
+    # def computeEnergy(self, uselocal=True, getArray=True)->(float):
+    #     if(uselocal):
+    #         arr = self.specLocalBuffer[-self.detectionWindow: , :]
+    #     else:
+    #         arr = self.specGlobalBuffer[-self.detectionWindow: , :]
         
-        energies = np.zeros((1023, ), dtype=np.float32)
-        iter = np.nditer(self.frequencies, flags=['f_index'])
-        for s in range(arr.shape[0]):#for each time sample
-            bin = arr[s, : ] # (1023, )
-            for a in iter: #iterate over the content of bins
-                if((a >= self.minFreq) and (a <= self.maxFreq)): #filter by freq range
-                    energies[iter.index] = self.dbsum([energies[iter.index], bin[iter.index]])
-        #self.sems[self.BufferTypes.ENERGY.value].acquire()
-        newenergyBuffer = np.roll(self.energyBuffer, -1023, axis=0)
-        energies.shape = -1, 1
-        newenergyBuffer[-1023:] = energies[:]
-        self.energyBuffer[: , :] = newenergyBuffer[:, :]
-        #self.sems[self.BufferTypes.ENERGY.value].release()
-        if(getArray):
-            return energies
-        return (np.mean(energies), np.std(energies))
+    #     energies = np.zeros((1023, ), dtype=np.float32)
+    #     iter = np.nditer(self.frequencies, flags=['f_index'])
+    #     for s in range(arr.shape[0]):#for each time sample
+    #         bin = arr[s, : ] # (1023, )
+    #         for a in iter: #iterate over the content of bins
+    #             if((a >= self.minFreq) and (a <= self.maxFreq)): #filter by freq range
+    #                 energies[iter.index] = self.dbsum([energies[iter.index], bin[iter.index]])
+    #     #self.sems[self.BufferTypes.ENERGY.value].acquire()
+    #     newenergyBuffer = np.roll(self.energyBuffer, -1023, axis=0)
+    #     energies.shape = -1, 1
+    #     newenergyBuffer[-1023:] = energies[:]
+    #     self.energyBuffer[: , :] = newenergyBuffer[:, :]
+    #     #self.sems[self.BufferTypes.ENERGY.value].release()
+    #     if(getArray):
+    #         return energies
+    #     return (np.mean(energies), np.std(energies))
+    
+    def computeEnergy(self, uselocal=True, getArray=True) -> (float):
+        windowToUse = self.detectionWindow if(self.cnt >= self.detectionWindow) else self.cnt
+        if (uselocal):
+            arr = self.specLocalBuffer[-windowToUse:, :]
+        else:
+            arr = self.specGlobalBuffer[-windowToUse:, :]
+        # Initialize energies to zero
+        energies = np.zeros(1023, dtype=np.float32)
+        # Compute the energy for each time sample
+        for s in range(arr.shape[0]):  # iterate over each time sample
+            bin = arr[s, :]  # Get the frequency bin for the current time sample (shape: 1023,)
+            #print('Bin contains: ', bin)
+            # Iterate over each frequency and apply the frequency mask
+            for i, freq in enumerate(self.frequencies):
+                if self.minFreq <= freq <= self.maxFreq:  # Only consider frequencies within the specified range
+                    energies[i] = self.dbsum([energies[i], bin[i]])
+                    #print('Processing Bin element at: ', i, ' with val: ', bin[i])
+            #print('Bin at ',s, ' Energy: ', np.sum(energies))
+        # Shift the energy buffer in-place (without np.roll) 
+        self.energyBuffer[:-self.energy_sz, :] = self.energyBuffer[self.energy_sz:, :]
+        energies = energies.reshape(-1, 1)
+        #print("Current Energy: ", self.dbmean(energies))
+        self.energyBuffer[-self.energy_sz:, :] = self.smoothEnergy(energies).reshape(-1,1)
+        if(self.isReady):
+            self.sig_data = self._detectEvent(self.energyBuffer)
+    
+    def smoothEnergy(self, energies): # Simple moving average for smoothing returns array of shape (1019,)
+        return np.convolve(np.ravel(energies), np.ones(self.smoothing_window)/self.smoothing_window, mode='valid')
+    
+    def dynamicThreshold(self, mean_energy, std_energy, snr):
+        # Dynamic threshold calculation based on mean + k * std
+        ajusted_factor = self.dyn_threshold_factor/ (1 + (snr))
+        return mean_energy + ajusted_factor * std_energy
+    
+    def _detectEvent(self, energies):
+        # Step 2: Smooth the energy using a sliding window
+        #smoothed_energies = self.smoothEnergy(energies)
+        #print("Smoothed Energies | ", smoothed_energies)
+         # Step 3: Compute mean and standard deviation of the smoothed energy for dynamic thresholding
+        mean_energy = np.mean(energies)
+        std_energy = np.std(energies)
+        # Step 4: Detect if current energy exceeds the high threshold (new detection) or is below the low threshold (end of detection)
+        current_energy = np.mean(np.trim_zeros(energies[-self.energy_sz:]))  # Most recent energy value
+        
+        # Step 5: Compute SNR 
+        noise_energy = np.mean(energies[:-self.energy_sz])
+        if(noise_energy == 0):
+            noise_energy = np.inf
+        snr = current_energy/ noise_energy
+        
+        # Step 6: Compute the dynamic threshold and apply hysteresis logic
+        high_threshold = self.dynamicThreshold(mean_energy, std_energy, snr)
+        low_threshold = self.low_threshold_factor * std_energy
+
+        if(self.debug):
+            print(f"Mean = {mean_energy} | StdDev = {std_energy}")
+            print(f"snr = {snr}")
+            print(f"hi_thresh = {high_threshold} | cur = {current_energy} | lo_thresh = {low_threshold}")
+        
+        if self.previous_detection:
+            # We are currently detecting, check if energy falls below low threshold
+            if current_energy < low_threshold:
+                self.previous_detection = False  # Reset detection
+                self.pre_activation = False
+                self.timer_set = False
+                if(self.debug):
+                    print("\n\n--------------------------------Resetting detection!")
+        else:
+            # Check if current energy exceeds the high threshold to trigger a new detection
+            if (current_energy > high_threshold):
+                self.pre_activation = True
+                self.elapsed_t = time.time()-self.trigger_time
+                #print("Elapsed: ", self.elapsed_t)
+                if(self.elapsed_t >= self.trigger_duration):
+                    self.previous_detection = True
+                    if(self.debug):
+                        print("\n\n++++++++++++++++++++++++++++++++Triggering detection!")
+            else: 
+                self.trigger_time = time.time()
+                self.pre_activation = False
+        return SignalInfo(mean_energy, std_energy, high_threshold, current_energy, low_threshold, snr, 
+                self.pre_activation, self.previous_detection)
+    
+    def getSignalAnalysis(self):
+        return self.sig_data
 
     '''Check sufficient time passed to initialize analysis'''
     def canRunAnalysis(self):
@@ -307,6 +404,7 @@ class SoundUtils():
         self.energyBuffer[:, :] = 0.0
     
     def dbsum(self, levels, axis=None):
+        #print('DBSum Levels: ', levels)
         """Energetic summation of levels.
 
         :param levels: Sequence of levels.
@@ -333,12 +431,12 @@ class SoundUtils():
 
 class SoundUtilsProxy(BaseProxy):
     _exposed_ = ('getAudioBuffer', 'getSpectrumBuffer', 'getAcousticBuffer', \
-                 'setScalingMode', 'p_getWindow', 'p_getAudLen', 'p_getACLen',\
-                 'p_getFrequencies', 'initializeSharedBuffers', 'computeEnergy', \
+                 'setScalingMode', 'p_getWindow', 'p_getAudLen', 'p_getACLen', 'p_getSpecLen', \
+                 'p_getFrequencies', 'initializeSharedBuffers', 'getSignalAnalysis', \
                  'writeOutVar', 'writeAudio', 'updateSpectogramPlot', 'canRunAnalysis', \
                  'initSpectogram', 'updateAcousticBuffer', 'updateAudioBuffer', \
                  'updateSpectrumBuffer', 'p_getBlobData', 'updateBlobData', \
-                 'p_getDetection', 'updateDetection', 'getScalingMode', 'resetBuffers')
+                 'getScalingMode', 'resetBuffers')
     
     #-------------------------------------------parameter accessors
     def p_getWindow(self):
@@ -350,21 +448,21 @@ class SoundUtilsProxy(BaseProxy):
     def p_getACLen(self):
         return self._callmethod('p_getACLen')
     
+    def p_getSpecLen(self):
+        return self._callmethod('p_getSpecLen')
+    
     def p_getFrequencies(self):
         return self._callmethod('p_getFrequencies')
     
     def p_getBlobData(self):
         return self._callmethod('p_getBlobData')
     
-    def p_getDetection(self):
-        return self._callmethod('p_getDetection')
-    
     #-----------------------------------------------operation methods
     def initializeSharedBuffers(self, shmnamesls:list):
         return self._callmethod('initializeSharedBuffers', (shmnamesls,))
     
-    def computeEnergy(self, uselocal=True, getArray=True):
-        return self._callmethod('computeEnergy', (uselocal, getArray,))
+    def getSignalAnalysis(self):
+        return self._callmethod('getSignalAnalysis')
     
     def writeOutVar(self, filename:str, uselocal=True):
         return self._callmethod('writeOutVar', (filename, uselocal,))
@@ -400,8 +498,8 @@ class SoundUtilsProxy(BaseProxy):
     def getAcousticBuffer(self):
         return self._callmethod('getAcousticBuffer')
     
-    def setScalingMode(self, mode: SoundUtils.ScalingMode, dynamic=3.1, max=None, crest=5):
-        return self._callmethod('setScalingMode', (mode, dynamic, max, crest,))
+    def setScalingMode(self, mode: SoundUtils.ScalingMode, dynamic=3.1, max=None, crest=5, minF=0, maxF=1e5):
+        return self._callmethod('setScalingMode', (mode, dynamic, max, crest, minF, maxF))
     
     def getScalingMode(self):
         return self._callmethod('getScalingMode')
@@ -541,7 +639,7 @@ class MissionData:
     name: str
 
 class ROSLayerUtils(object):
-    DataPoint = namedtuple('DataPoint', 'id x y theta media energy std_dev')
+    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy snr')
     def __init__(self, debug=False) -> None:
         self.mediaDir = os.path.expanduser("~") + '/current'
         if(not os.path.exists(self.mediaDir)):
@@ -584,11 +682,12 @@ class ROSLayerUtils(object):
         else:
             return self.mediaDir
     
-    def addMetaData(self, media, info, isActionPoint=False, id=None, useMsnPath=False):
+    def addMetaData(self, media, info, id=None, isActionPoint=False, useMsnPath=False, sigInfo:SignalInfo=None):
         assignedId = self.localId if (id is None) else id
         obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
                                             float(info[0]), float(info[1]), float(info[2]), 
-                                            media, float(info[3][0]), float(info[3][1]))
+                                            media, 
+                                            sigInfo.mean, sigInfo.std_dev, sigInfo.current, sigInfo.snr)
         path = self.getPath(fetchMsnDir=useMsnPath)
         if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
             with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:

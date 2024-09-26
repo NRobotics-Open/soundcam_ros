@@ -2,8 +2,10 @@
 ip: '192.168.3.101'
 port: 6340
 protocol: 3
-driver_debug: False
+driver_debug: True
 system_run: False #if False: turns off all visualizations & uses ROS publishers
+gui_hostname: 'localhost'
+gui_port: 65432
 
 #Streaming parameters
 distance: 3500 #mm
@@ -14,7 +16,7 @@ camera_H: 480
 acimageFPS: 50 #fps
 acAvg: 0 #0 - fast 1 - slow 2 - impulse
 deviceState: 5 #0-Idle 1-Measuring 2-Streaming 3-Service_1 4-Ultrasonic 5-Ultrasonic+
-dataToSend1: 79 #11110010 (75) (data) -> AcVid, Vid, ThermalVid, LocalSound, MicLevels, MicRaw, Spectra, SingleMic
+dataToSend1: 67 #11000010 #(79) - 11110010 (75) (data) -> AcVid, Vid, ThermalVid, LocalSound, MicLevels, MicRaw, Spectra, SingleMic
 dataToSend2: 1 #1000000 (filters) -> LocalSound, LevelFiltered, RawDataFiltered, IRGain
 heartbeatRate: 300 #Hz - Not used
 cameraLighting: 0 #0-off 1-on
@@ -49,20 +51,22 @@ maximum_spdb: 120
 visualizeOverlay: False  #forces(sets) -> visualizeVideo
 overlayConfig: '1000' # [Acoustic, Spectrum, Audio, Thermal] -> only Acoustic impl'td
 
+# Signal Detection parameters
+detection_xy_offset: 25  #offset for centering the detected blob - NOT USED
+dynamic_thresh_factor: 8 #set lower to make the trigger more sensitive
+low_thresh_factor: 1.5 # set higher to make the detector sensitive to signal loss/disappearance
+smoothing_win: 5 # how many data samples to use for smoothing the signal
+trigger_duration: 2.0 #seconds
 
 ## ROS PARAMETERS
 frame: 'soundcam'
-ros_debug: True
+ros_debug: False
 auto_detect: True
-detection_xy_offset: 25  #offset for centering the detected blob - NOT USED
-mean_energy_thresh: 15.0
-energy_std_dev: 10.0
-trigger_time: 1.3 #seconds
 max_megabytes: 1000 #Megabytes
 min_record_time: 1.0 #seconds
 max_record_time: 5.0 #seconds
 frame_multiplier: 2.0 #for video recording timing
-rest_dist: 3.0 #meters
+rest_dist: 3.0 #meters How far the robot can travel before recording the next trigger in Autodetect mode
 pose_topic: '/robot_pose'
 capture_feedback_topic: '/wp/capture/status'
 publish_dev: True

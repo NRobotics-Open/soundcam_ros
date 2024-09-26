@@ -29,10 +29,8 @@ import SharedArray as sa
 import psutil
 
 from utils import SoundUtils as SU, SoundUtilsProxy as SUP, SoundUtilsManager, \
-    EuclideanDistTracker
+    EuclideanDistTracker, SignalInfo
 
-#http stream
-#from soundcam_streamer import StreamingServer, StreamingOutput, StreamingHandler
 
 FIRMWARE_VERSION = '2.8.3.0'
 CONNECT_TIMEOUT = 25 #seconds
@@ -66,6 +64,7 @@ class SoundCamConnector(object):
         print('Firmware Version: ', FIRMWARE_VERSION)
         self.debug = debug
         self.testing = False
+        self.send_to_gui = False
         self.invokeId = 1
         self.cfgObj = cfgObj
 
@@ -77,7 +76,11 @@ class SoundCamConnector(object):
         # manager = SoundUtilsManager()
         # manager.start()
         # self.scamUtils = manager.SoundUtils()
-        self.scamUtils = SU()
+        self.scamUtils = SU(window=60, detectionWin=5, acFreq=10, specFreq=4, 
+                            dynamic_thresh_f=self.cfgObj['dynamic_thresh_factor'],
+                            low_thresh_f=self.cfgObj['low_thresh_factor'],
+                            smoothing_win=self.cfgObj['smoothing_win'], 
+                            trigger_duration=self.cfgObj['trigger_duration'])
         self.objTracker = EuclideanDistTracker()
         
         self.shmnames=['npaudiomem', 'npglobalspecmem', 'nplocalspecmem', 'npacmem', 'npenergymem']
@@ -85,7 +88,9 @@ class SoundCamConnector(object):
         self.scamUtils.setScalingMode(SU.ScalingMode(self.cfgObj['scalingMode']), 
                                       dynamic=self.cfgObj['dynamic'], 
                                       max=self.cfgObj['maximum'],
-                                      crest= self.cfgObj['crest'])
+                                      crest= self.cfgObj['crest'],
+                                      minF=self.cfgObj['minFrequency'],
+                                      maxF=self.cfgObj['maxFrequency'])
         for shm in self.shmnames:
             try:
                 sa.delete(shm) #audio buffer
@@ -94,7 +99,7 @@ class SoundCamConnector(object):
         self.audioBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.AUDIO.value], (self.scamUtils.p_getAudLen(), 1))
         self.globalSpecBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.GLOBAL_SPECTRUM.value], (self.scamUtils.p_getWindow(), 1023))
         self.localSpecBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.LOCAL_SPECTRUM.value], (self.scamUtils.p_getWindow(), 1023))
-        self.energyBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.ENERGY.value], (self.scamUtils.p_getACLen(), 1))
+        self.energyBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.ENERGY.value], (self.scamUtils.p_getSpecLen(), 1))
         self.acousticBuffer = sa.create("shm://" + self.shmnames[SU.BufferTypes.ACOUSTIC.value], (self.scamUtils.p_getACLen(), 1))
         self.scamUtils.initializeSharedBuffers(shmnamesls=self.shmnames)
 
@@ -107,7 +112,7 @@ class SoundCamConnector(object):
         self.visualUp = False
         self.connected = False
         self.is_alive = False
-        self.energyInfo = (0.0, 0.0)
+        self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         #prepare queues
         self.processes = list()
@@ -208,6 +213,7 @@ class SoundCamConnector(object):
         # self.processes.append(Process(target=self.streamFilter, args=(self.qDict, self.processData)))
         for proc in self.processes:
             proc.start()
+        
 
         #Note: All data is sent as Little Endian!
     
@@ -345,6 +351,8 @@ class SoundCamConnector(object):
             #     except BrokenPipeError:
             #         pass
             # print('done!')
+            # if(self.use_dpg_gui):
+            #     self.gui_socket.close()
         except Exception as ex:
             print('Error joining processes/threads: ', ex)
     
@@ -436,10 +444,9 @@ class SoundCamConnector(object):
                      dynamic=3.1, crest=5.0, maximum=None):
         self.hasStreamData = False
         try:
-            time.sleep(1.0)
             #configure acoustic filter
             self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
-                                          max=maximum, crest=crest)
+                                          max=maximum, crest=crest, minF=minFreq, maxF=maxFreq)
             #Configure with WriteObjectReq request --- multiple
             query = self.protocol.ConfigureCamera(self.invokeId, 
                             distance, (minFreq, maxFreq), 
@@ -897,12 +904,13 @@ class SoundCamConnector(object):
         hits = 0
         start_t = time.time()
 
-        #detection algorithm
-        detect_start = time.time()
-        has_started = False
+        # GUI
+        if(self.send_to_gui):
+            gui_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            gui_socket.connect((self.cfgObj['gui_hostname'], self.cfgObj['gui_port']))
         while(self.processData.is_set()):
             try:
-                raw = self.specQ.get(timeout=0.1)
+                raw = self.specQ.get(timeout=0.05)
                 if(raw is None):
                     continue
                 decoded = self.protocol.unpackDecodeSpectrumData(raw)
@@ -910,27 +918,11 @@ class SoundCamConnector(object):
                     continue
                 with self.spec_semaphore:
                     self.scamUtils.updateSpectrumBuffer(decoded)
-                    energy_info = self.scamUtils.computeEnergy(getArray=False)
-                    self.energyInfo = energy_info
-                    if(not has_started):
-                        if((energy_info[0] > self.cfgObj['mean_energy_thresh']) and 
-                        (energy_info[1] > self.cfgObj['energy_std_dev'])):
-                            print("Activation!!!")
-                            print(f"Mean Energy: {energy_info[0]:.4f}")
-                            print(f"Standard deviation of energy: {energy_info[1]:.4f}")
-                            detect_start = time.time()
-                            has_started = True
-                    else:
-                        #print('Will update detection: ', self.scamUtils.p_getDetection())
-                        if((time.time() - detect_start >= self.cfgObj['trigger_time'])):
-                            self.scamUtils.updateDetection(True)
-                        if((energy_info[0] < self.cfgObj['mean_energy_thresh']) and 
-                        (energy_info[1] < self.cfgObj['energy_std_dev'])):
-                            print("Deactivation!!!")
-                            print(f"Mean Energy: {energy_info[0]:.4f}")
-                            print(f"Standard deviation of energy: {energy_info[1]:.4f}")
-                            has_started = False
-                            self.scamUtils.updateDetection(False)
+                    self.signalInfo = self.scamUtils.getSignalAnalysis()
+                
+                if(self.send_to_gui):
+                    message = 'This is a test message to GUI'
+                    gui_socket.sendall(message.encode('utf-8'))
                                        
                 #print('Spectrum:', decoded[0], ' ' ,decoded[1])
                 if(not self.proc_specQ.full()): #push spectrum data to overlay_Q
@@ -958,6 +950,8 @@ class SoundCamConnector(object):
             except Exception as e:
                 print(f"Error in spectrum process {e}")
                 break
+        if(self.send_to_gui):
+            self.gui_socket.close()
 
     '''Decodes and Publishes Audio data'''
     def processAudio(self):
@@ -1319,13 +1313,12 @@ class SoundCamConnector(object):
     def getBlobData(self):
         return self.scamUtils.p_getBlobData()
     
-    ''' Returns the Mean Energy and Std. Dev in the Spectrum '''
-    def getEnergy(self):
-        return self.scamUtils.computeEnergy(getArray=False)
-    
-    ''' Returns the detection status '''
-    def hasDetection(self):
-        return self.scamUtils.p_getDetection()
+    ''' Returns the signal analysis in the Spectrum 
+        NamedTuple: Mean Energy, Std Dev, High Energy Thresh, Current Energy, Low Energy Thresh, SNR, 
+        pre-activation flag, detection flag
+    '''
+    def getSignalInfo(self):
+        return self.signalInfo
     
     ''' Sets & Returns the scaling Mode for the Acoustic filter '''
     def setScalingMode(self, mode, max=None, dynamic=5.0, crest=3.1):
@@ -1339,9 +1332,6 @@ class SoundCamConnector(object):
     
     def isContinuousStream(self):
         return self.hasStreamData
-    
-    def getEnergyInfo(self):
-        return self.energyInfo
 
     '''
     --------------------------------------------------------------------VISUALIZATION METHODS
