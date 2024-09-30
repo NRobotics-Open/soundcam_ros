@@ -71,12 +71,6 @@ class SoundcamROS(object):
         rospy.loginfo('Bringing up interfaces ...')
         if(self.pubDevStream):
             rospy.loginfo('Instantiating dev streams ...')
-            # gst_pipeline = (
-            #     "appsrc ! videoconvert ! "
-            #     "video/x-raw,format=I420 ! "
-            #     "v4l2sink device=/dev/video10"
-            # )
-            #self.dev10 = cv2.VideoWriter(gst_pipeline, cv2.CAP_GSTREAMER, 0, 15.0, (640, 480), True)
             self.devStr.append(pf.FakeWebcam(self.cfg['bw_virt_device'], 640, 480))
 
         if(not cfgContext['system_run']): #start publishers, service servers and action servers
@@ -88,42 +82,44 @@ class SoundcamROS(object):
             self.capture_pub = rospy.Publisher(self.cfg['capture_feedback_topic'], Bool, queue_size=1)
             
             thread_grp = list()
-            self.vidbw_pub = rospy.Publisher(self.cfg['frame'] + '/video/bw/compressed', CompressedImage, queue_size=15)
-            thread_grp.append(threading.Thread(target=self.videoPublishing, 
-                                      args=[self.vidbw_pub, self.camera.getBWVideo, 
-                                            SoundcamServiceRequest.VIDEO_STREAM, 
-                                            self.devStr[0]], 
-                                      daemon=True))
+            if(self.cfg['processVideo']):
+                self.vidbw_pub = rospy.Publisher(self.cfg['frame'] + '/video/bw/compressed', CompressedImage, queue_size=15)
+                thread_grp.append(threading.Thread(target=self.videoPublishing, 
+                                        args=[self.vidbw_pub, self.camera.getBWVideo, 
+                                                SoundcamServiceRequest.VIDEO_STREAM, 
+                                                self.devStr[0]], 
+                                        daemon=True))
+            if(self.cfg['processThermal']):
+                self.vidthm_pub = rospy.Publisher(self.cfg['frame'] + '/video/thermal/compressed', CompressedImage, queue_size=15)
+                thread_grp.append(threading.Thread(target=self.videoPublishing, 
+                                        args=[self.vidthm_pub, self.camera.getTMVideo, 
+                                                SoundcamServiceRequest.THERMAL_STREAM], 
+                                        daemon=True))
+            if(self.cfg['processAcVideo']):
+                self.vidac_pub = rospy.Publisher(self.cfg['frame'] + '/video/acoustic/compressed', CompressedImage, queue_size=15)
+                thread_grp.append(threading.Thread(target=self.videoPublishing, 
+                                        args=[self.vidac_pub, self.camera.getACVideo, 
+                                                SoundcamServiceRequest.ACOUSTIC_STREAM], 
+                                        daemon=True))
+            if(self.cfg['processAcVideo'] and self.cfg['processVideo']):
+                self.vidoly_pub = rospy.Publisher(self.cfg['frame'] + '/video/overlay/compressed', CompressedImage, queue_size=15)
+                thread_grp.append(threading.Thread(target=self.videoPublishingPostProc, 
+                                        args=[self.vidoly_pub, self.camera.getBWVideo, self.camera.getACVideo, 
+                                                SoundcamServiceRequest.OVERLAY_STREAM], 
+                                        daemon=True))
+            if(self.cfg['processAudio']):
+                self.audio_info_pub = rospy.Publisher(self.cfg['frame'] + '/audio/info', AudioInfo, queue_size=3, latch=True)
+                self.audio_pub = rospy.Publisher(self.cfg['frame'] + '/audio', AudioDataStamped, queue_size=15)
+                thread_grp.append(threading.Thread(target=self.audioPublishing, 
+                                        args=[self.audio_pub, self.audio_info_pub, 
+                                                self.camera.getAudio, self.camera.getAudioInfo], 
+                                        daemon=True))
             
-            self.vidthm_pub = rospy.Publisher(self.cfg['frame'] + '/video/thermal/compressed', CompressedImage, queue_size=15)
-            thread_grp.append(threading.Thread(target=self.videoPublishing, 
-                                      args=[self.vidthm_pub, self.camera.getTMVideo, 
-                                            SoundcamServiceRequest.THERMAL_STREAM], 
-                                      daemon=True))
-
-            self.vidac_pub = rospy.Publisher(self.cfg['frame'] + '/video/acoustic/compressed', CompressedImage, queue_size=15)
-            thread_grp.append(threading.Thread(target=self.videoPublishing, 
-                                      args=[self.vidac_pub, self.camera.getACVideo, 
-                                            SoundcamServiceRequest.ACOUSTIC_STREAM], 
-                                      daemon=True))
-            
-            self.vidoly_pub = rospy.Publisher(self.cfg['frame'] + '/video/overlay/compressed', CompressedImage, queue_size=15)
-            thread_grp.append(threading.Thread(target=self.videoPublishingPostProc, 
-                                      args=[self.vidoly_pub, self.camera.getBWVideo, self.camera.getACVideo, 
-                                            SoundcamServiceRequest.OVERLAY_STREAM], 
-                                      daemon=True))
-            
-            self.audio_info_pub = rospy.Publisher(self.cfg['frame'] + '/audio/info', AudioInfo, queue_size=3, latch=True)
-            self.audio_pub = rospy.Publisher(self.cfg['frame'] + '/audio', AudioDataStamped, queue_size=15)
-            thread_grp.append(threading.Thread(target=self.audioPublishing, 
-                                      args=[self.audio_pub, self.audio_info_pub, 
-                                            self.camera.getAudio, self.camera.getAudioInfo], 
-                                      daemon=True))
-            
-            self.spectrum_pub = rospy.Publisher(self.cfg['frame'] + '/spectrum', Spectrum, queue_size=15)
-            thread_grp.append(threading.Thread(target=self.spectrumPublishing, 
-                                      args=[self.spectrum_pub, self.camera.getSpectrum], 
-                                      daemon=True))
+            if(self.cfg['processSpectrum']):
+                self.spectrum_pub = rospy.Publisher(self.cfg['frame'] + '/spectrum', Spectrum, queue_size=15)
+                thread_grp.append(threading.Thread(target=self.spectrumPublishing, 
+                                        args=[self.spectrum_pub, self.camera.getSpectrum], 
+                                        daemon=True))
             
             rospy.Subscriber(self.cfg['pose_topic'], Pose, self.subRobotPose)
             
@@ -618,19 +614,19 @@ class SoundcamROS(object):
 
                 if(req.preset.hasPreset): #Configure camera preset
                     if(req.preset.presetName != self.curPreset.presetName):
-                        if(self.camera.isMeasuring()): #stop measurement if running
-                            self.camera.stopMeasurement()
+                        # if(self.camera.isMeasuring()): #stop measurement if running
+                        #     self.camera.stopMeasurement()
                         if(self.setPreset(req.preset)):
                             rospy.loginfo('Preset sent!')
-                            self.curPreset = req.preset
-                            self.camera.startMeasurement() #start measurement
-                            start_t = time.time()
-                            while(not self.camera.isContinuousStream()):
-                                rospy.loginfo_throttle(3, "Awaiting camera stream ...")
-                                if((time.time() - start_t) >= 15.0):
-                                    rospy.logwarn("Camera stream taking longer to resume \
-                                                \nCamera might be in Error!")
-                                    break
+                            # self.curPreset = req.preset
+                            # self.camera.startMeasurement() #start measurement
+                            # start_t = time.time()
+                            # while(not self.camera.isContinuousStream()):
+                            #     rospy.loginfo_throttle(3, "Awaiting camera stream ...")
+                            #     if((time.time() - start_t) >= 15.0):
+                            #         rospy.logwarn("Camera stream taking longer to resume \
+                            #                     \nCamera might be in Error!")
+                            #         break
                         else:
                             rospy.logerr('Unable to send preset!')
                             if(not self.camera.isMeasuring()):

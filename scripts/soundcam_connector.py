@@ -245,7 +245,7 @@ class SoundCamConnector(object):
                         socket.SOCK_STREAM) # UDP SOCK_DGRAM   #TCP SOCK_STREAM
         if hasattr(socket, "SO_REUSEPORT"):
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) 
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             self.sock.connect((ip_addr, port))
             self.connected = True
@@ -442,6 +442,10 @@ class SoundCamConnector(object):
     '''
     def updatePreset(self, mode, distance, minFreq, maxFreq,
                      dynamic=3.1, crest=5.0, maximum=None):
+        self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
+                                          max=maximum, crest=crest, minF=minFreq, maxF=maxFreq)
+        self.scamUtils.resetBuffers()
+        return True
         self.hasStreamData = False
         try:
             #configure acoustic filter
@@ -539,11 +543,34 @@ class SoundCamConnector(object):
                     if((now - start_t) >= 10.0 and self.connected and self.debug):
                         print('Cyclic loop running ...')
                         start_t = time.time()
+                except Exception:
+                    pass
+            else:
+                #print('Awaiting socket connnection ...')
+                time.sleep(0.1)
+    
+    def receiveCyclic2(self):
+        print('Cyclic thread started ...')
+        start_t = time.time()
+        buffer = b''
+        while(self.processData.is_set() and self.canRun):
+            if(self.connected):
+                try:
+                    res = self.sock.recv(4096)
+                    if(res):
+                        buffer += res
+                        if(self.recvStream):
+                            pass
+                        else: #if not streaming
+                            try:
+                                self.protocol.unpackDecodeResponse(response=res)
+                            except Exception as ex:
+                                print('\nError Unpacking and Decoding ...')
 
-                    """ if((now - heart_t) >= heartrate):
-                        #send ACK to device
-                        heart_t = now """
-                    #time.sleep(0.0001)
+                    now = time.time()
+                    if((now - start_t) >= 10.0 and self.connected and self.debug):
+                        print('Cyclic loop running ...')
+                        start_t = time.time()
                 except Exception:
                     pass
             else:
@@ -669,10 +696,13 @@ class SoundCamConnector(object):
                 if(canPrintLen and isHdrPkt):
                     if(inObj):
                         hdr, readPos, _ = self._readBytes(data, readPos, 12)
-                        if(hdr == b''):
+                        if(hdr == b'' or len(hdr) < 12):
                             canPopfromQ = True
                             continue
                         dmsg = self.protocol.unpackDataMessage(hdr)
+                        if(dmsg is None):
+                            canPopfromQ = True
+                            continue
                         if(debug):
                             print(dmsg)
                     else:

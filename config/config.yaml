@@ -9,18 +9,18 @@ gui_port: 65432
 
 #Streaming parameters
 distance: 3500 #mm
-minFrequency: 18500
-maxFrequency: 55000
+minFrequency: 10000
+maxFrequency: 100000
 camera_W: 640
 camera_H: 480
-acimageFPS: 50 #fps
+acimageFPS: 100 #fps
 acAvg: 0 #0 - fast 1 - slow 2 - impulse
 deviceState: 5 #0-Idle 1-Measuring 2-Streaming 3-Service_1 4-Ultrasonic 5-Ultrasonic+
 dataToSend1: 67 #11000010 #(79) - 11110010 (75) (data) -> AcVid, Vid, ThermalVid, LocalSound, MicLevels, MicRaw, Spectra, SingleMic
 dataToSend2: 1 #1000000 (filters) -> LocalSound, LevelFiltered, RawDataFiltered, IRGain
 heartbeatRate: 300 #Hz - Not used
 cameraLighting: 0 #0-off 1-on
-videoFPS: 30 #fps
+videoFPS: 50 #fps
 
 #Acoustic Video config
 scalingMode: 2 #0-off, 1-Auto (scale with respect to the max in the set region), 2-Smart
@@ -31,8 +31,8 @@ crest: 15.0 #dB [5 - 15]
 processVideo: True
 processAcVideo: True
 processSpectrum: True
-processAudio: True
-processThermal: True
+processAudio: False
+processThermal: False
 
 #Visualization parameters -> if 'system_run' is True
 visualizeVideo: False

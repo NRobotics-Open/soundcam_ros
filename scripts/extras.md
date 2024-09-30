@@ -60,4 +60,7 @@ souphttpsrc location=http://192.168.3.100/mist?source=dc ! multipartdemux ! jpeg
     -   sudo modprobe v4l2loopback
     -   v4l2-ctl --list-devices
 
+# SSH
+    - ssh-keygen -f "/home/ephson/.ssh/known_hosts" -R "192.168.3.120"
+
 
