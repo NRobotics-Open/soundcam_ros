@@ -2,7 +2,7 @@
 ip: '192.168.3.101'
 port: 6340
 protocol: 3
-driver_debug: True
+driver_debug: False
 system_run: False #if False: turns off all visualizations & uses ROS publishers
 gui_hostname: 'localhost'
 gui_port: 65432
@@ -13,14 +13,14 @@ minFrequency: 10000
 maxFrequency: 100000
 camera_W: 640
 camera_H: 480
-acimageFPS: 100 #fps
+acimageFPS: 80 #fps
 acAvg: 0 #0 - fast 1 - slow 2 - impulse
 deviceState: 5 #0-Idle 1-Measuring 2-Streaming 3-Service_1 4-Ultrasonic 5-Ultrasonic+
-dataToSend1: 67 #11000010 #(79) - 11110010 (75) (data) -> AcVid, Vid, ThermalVid, LocalSound, MicLevels, MicRaw, Spectra, SingleMic
+dataToSend1: 79 #(67) 11000010 #(79) - 11110010 (75) (data) -> AcVid, Vid, ThermalVid, LocalSound, MicLevels, MicRaw, Spectra, SingleMic
 dataToSend2: 1 #1000000 (filters) -> LocalSound, LevelFiltered, RawDataFiltered, IRGain
 heartbeatRate: 300 #Hz - Not used
 cameraLighting: 0 #0-off 1-on
-videoFPS: 50 #fps
+videoFPS: 30 #fps
 
 #Acoustic Video config
 scalingMode: 2 #0-off, 1-Auto (scale with respect to the max in the set region), 2-Smart
@@ -31,8 +31,8 @@ crest: 15.0 #dB [5 - 15]
 processVideo: True
 processAcVideo: True
 processSpectrum: True
-processAudio: False
-processThermal: False
+processAudio: True
+processThermal: True
 
 #Visualization parameters -> if 'system_run' is True
 visualizeVideo: False

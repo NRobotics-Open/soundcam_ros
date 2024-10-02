@@ -739,6 +739,8 @@ class CameraProtocol(object):
     
     ''' Unpacks, Decodes the received spectrum bytes '''
     def unpackDecodeSpectrumData(self, data:bytes):
+        if(data is None):
+            return None
         try:
             dstr = '<QfH2L'
             dssize = struct.calcsize(dstr)

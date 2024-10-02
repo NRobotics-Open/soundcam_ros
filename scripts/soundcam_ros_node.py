@@ -178,7 +178,12 @@ class SoundcamROS(object):
             rospy.loginfo_throttle(3, 'SC| Sent status msg')
 
     def videoPublishing(self, pub:rospy.Publisher, fn, streamType, devStrObj:pf.FakeWebcam=None):
-        rate = rospy.Rate(15)
+        pub_rate = 30.0
+        if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
+            pub_rate = self.cfg['videoFPS']
+        elif(streamType == SoundcamServiceRequest.ACOUSTIC_STREAM):
+            pub_rate = self.cfg['acimageFPS']
+        rate = rospy.Rate(pub_rate)
         while(not rospy.is_shutdown() and self.canRun):
             if(not self.pauseContinuous):
                 img_arr:np.array = fn()
@@ -186,12 +191,10 @@ class SoundcamROS(object):
                 #print(img_arr)
                 if(img_arr is not None):
                     # Publish to DEV
-                    if(self.pubDevStream and devStrObj is not None):
+                    if(self.pubDevStream and devStrObj is not None and 
+                       (streamType == SoundcamServiceRequest.VIDEO_STREAM)):
                         processed_frame = self.utils.publishDevStream(img_arr)
                         devStrObj.schedule_frame(processed_frame)
-                        # cv2.imshow('Processed Frame', processed_frame)
-                        # if cv2.waitKey(1) & 0xFF == ord('q'):
-                        #     break
 
                     # MANUAL stream recording
                     if(self.manualTrigger and (self.streamType == streamType)):
@@ -214,7 +217,7 @@ class SoundcamROS(object):
             rate.sleep()
     
     def videoPublishingPostProc(self, pub:rospy.Publisher, fn1, fn2, streamType):
-        rate = rospy.Rate(15)
+        rate = rospy.Rate(30)
         p_img_arr1 = None
         p_img_arr2 = None
         while(not rospy.is_shutdown() and self.canRun):
@@ -247,7 +250,7 @@ class SoundcamROS(object):
             rate.sleep()
     
     def audioPublishing(self, pub:rospy.Publisher, pubinfo:rospy.Publisher, fn, fninfo):
-        rate = rospy.Rate(30)
+        rate = rospy.Rate(100)
         msg = AudioDataStamped()
         msg.header.frame_id = self.cfg['frame']
         msginfo = AudioInfo()
@@ -289,7 +292,7 @@ class SoundcamROS(object):
             rate.sleep()
 
     def spectrumPublishing(self, pub:rospy.Publisher, fn):
-        rate = rospy.Rate(20)
+        rate = rospy.Rate(30)
         msg = Spectrum()
         msg.header.frame_id = self.cfg['frame']
         while(not rospy.is_shutdown() and self.canRun):
@@ -757,7 +760,7 @@ class SoundcamROS(object):
         self.prepareMissionDirectory()
 
         #run while loop
-        rate = rospy.Rate(15)
+        rate = rospy.Rate(30)
         result = False
         cnt = 1
         past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
