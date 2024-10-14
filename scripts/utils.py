@@ -683,40 +683,45 @@ class ROSLayerUtils(object):
             return self.mediaDir
     
     def addMetaData(self, media, info, id=None, isActionPoint=False, useMsnPath=False, sigInfo:SignalInfo=None):
-        assignedId = self.localId if (id is None) else id
-        obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
-                                            float(info[0]), float(info[1]), float(info[2]), 
-                                            media, 
-                                            sigInfo.mean, sigInfo.std_dev, sigInfo.current, sigInfo.snr)
-        path = self.getPath(fetchMsnDir=useMsnPath)
-        if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
-            with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
-                self.metaData = yaml.safe_load(infofile)
-        
-        hasId = False
-        if(isActionPoint):
-            for obj_old in self.metaData['actionpoints']:
-                if(obj_old['id'] == assignedId):
-                    hasId = True
-                    for dt in obj.media:
-                        obj_old['media'].append(dt)
-                    break
-            if(not hasId):
-                self.metaData['actionpoints'].append(obj._asdict())
-        else:
-            for obj_old in self.metaData['datapoints']:
-                #print('Existing content: ', obj_old)
-                if(obj_old['id'] == assignedId):
-                    hasId = True
-                    for dt in obj.media:
-                        obj_old['media'].append(dt)
-                    break
-            if(not hasId):
-                self.metaData['datapoints'].append(obj._asdict())
-            self.localId += 1
+        try:
+            assignedId = self.localId if (id is None) else id
+            obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
+                                                float(info[0]), float(info[1]), float(info[2]), 
+                                                media, 
+                                                sigInfo.mean, sigInfo.std_dev, sigInfo.current, sigInfo.snr)
+            path = self.getPath(fetchMsnDir=useMsnPath)
+            if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
+                with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
+                    self.metaData = yaml.safe_load(infofile)
+            
+            hasId = False
+            if(isActionPoint):
+                for obj_old in self.metaData['actionpoints']:
+                    if(obj_old['id'] == assignedId):
+                        hasId = True
+                        for dt in obj.media:
+                            obj_old['media'].append(dt)
+                        break
+                if(not hasId):
+                    self.metaData['actionpoints'].append(obj._asdict())
+            else:
+                for obj_old in self.metaData['datapoints']:
+                    #print('Existing content: ', obj_old)
+                    if(obj_old['id'] == assignedId):
+                        hasId = True
+                        for dt in obj.media:
+                            obj_old['media'].append(dt)
+                        break
+                if(not hasId):
+                    self.metaData['datapoints'].append(obj._asdict())
+                self.localId += 1
 
-        with open(os.path.join(path, 'meta-data.yaml') , 'w') as infofile: #write meta data file
-            yaml.dump(self.metaData, infofile)
+            with open(os.path.join(path, 'meta-data.yaml') , 'w') as infofile: #write meta data file
+                yaml.dump(self.metaData, infofile)
+            return True
+        except Exception as e:
+            print('Exception caught! ', e)
+            return False
 
     def eulerDistance(self, coords:list):
         return math.sqrt(math.pow((coords[0] - 320), 2) + 

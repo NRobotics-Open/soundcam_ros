@@ -363,12 +363,7 @@ class SoundcamROS(object):
                                                             msg.orientation.x,
                                                             msg.orientation.y,
                                                             msg.orientation.z)
-            # if(self.debug):
-            #     rospy.loginfo_throttle(3, 'SC| Got robot pose: X:{0}, Y:{1}, Theta:{2}'.format(
-            #         msg.position.x, msg.position.y, orientation_eu[2]
-            #     ))
             self.curPose = [msg.position.x, msg.position.y, orientation_eu[2]]
-            print('Current pose is: ', self.curPose)
         except Exception as e:
             rospy.logerr(e)
 
@@ -451,11 +446,14 @@ class SoundcamROS(object):
                 return False
         
         if((extras is not None) and (len(media) > 0)):
-            self.utils.addMetaData(media=media,isActionPoint=isActPoint, 
+            if(not self.utils.addMetaData(media=media,isActionPoint=isActPoint, 
                                    id=extras[0], 
-                                   pose=(extras[1:4]), 
+                                   info=(extras[1:4]), 
                                    sigInfo=extras[4],
-                                   useMsnPath=True)
+                                   useMsnPath=True)):
+                if(self.debug):
+                    rospy.logerr_throttle(1, 'SC| Snapshot failure!')
+                return False
         self.publishCaptureFeedback(self.capture_pub)
         if(self.debug):
             rospy.loginfo_throttle(1, 'SC| Snapshot success!')
