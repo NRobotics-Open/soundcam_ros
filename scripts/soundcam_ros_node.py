@@ -778,8 +778,6 @@ class SoundcamROS(object):
                     result = True
                     break
             elif((recordTime > self.cfg['min_record_time']) and (numCaptures > 0)):
-                if(self.signalInfo.mean > past_sig_i.mean):
-                    past_sig_i = self.signalInfo
                 #Make Recordings
                 if(not self.recordTrigger): #start recording
                     self.recordTrigger = True
@@ -795,6 +793,18 @@ class SoundcamROS(object):
                             past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
                             time.sleep(delay)
                     else: # report progress
+                        # Capture detection values
+                        if((not past_sig_i.detection) and self.signalInfo.detection):
+                            past_sig_i = self.signalInfo
+                        if(self.signalInfo.mean > past_sig_i.mean):
+                            past_sig_i.mean = self.signalInfo.mean
+                            past_sig_i.snr = self.signalInfo.snr
+                            past_sig_i.std_dev = self.signalInfo.std_dev
+                        if(self.signalInfo.hi_thresh > past_sig_i.hi_thresh):
+                            past_sig_i.hi_thresh = self.signalInfo.hi_thresh
+                        if((past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < past_sig_i.lo_thresh)):
+                            past_sig_i.lo_thresh = self.signalInfo.lo_thresh
+                        
                         rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
                         self.act_feedbk.capture_count = cnt
                         self.act_feedbk.currentTime.data = rospy.Time.now()

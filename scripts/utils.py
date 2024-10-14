@@ -639,7 +639,7 @@ class MissionData:
     name: str
 
 class ROSLayerUtils(object):
-    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy snr')
+    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy snr detection isSolved')
     def __init__(self, debug=False) -> None:
         self.mediaDir = os.path.expanduser("~") + '/current'
         if(not os.path.exists(self.mediaDir)):
@@ -688,7 +688,9 @@ class ROSLayerUtils(object):
             obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
                                                 float(info[0]), float(info[1]), float(info[2]), 
                                                 media, 
-                                                sigInfo.mean, sigInfo.std_dev, sigInfo.current, sigInfo.snr)
+                                                float(sigInfo.mean), float(sigInfo.std_dev), 
+                                                float(sigInfo.current), float(sigInfo.snr),
+                                                sigInfo.detection, False)
             path = self.getPath(fetchMsnDir=useMsnPath)
             if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
                 with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
