@@ -797,13 +797,12 @@ class SoundcamROS(object):
                         if((not past_sig_i.detection) and self.signalInfo.detection):
                             past_sig_i = self.signalInfo
                         if(self.signalInfo.mean > past_sig_i.mean):
-                            past_sig_i.mean = self.signalInfo.mean
-                            past_sig_i.snr = self.signalInfo.snr
-                            past_sig_i.std_dev = self.signalInfo.std_dev
+                            past_sig_i._replace(mean=self.signalInfo.mean, snr=self.signalInfo.snr, 
+                                                std_dev=self.signalInfo.std_dev)
                         if(self.signalInfo.hi_thresh > past_sig_i.hi_thresh):
-                            past_sig_i.hi_thresh = self.signalInfo.hi_thresh
+                            past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
                         if((past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < past_sig_i.lo_thresh)):
-                            past_sig_i.lo_thresh = self.signalInfo.lo_thresh
+                            past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
                         
                         rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
                         self.act_feedbk.capture_count = cnt
