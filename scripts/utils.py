@@ -12,7 +12,7 @@ NFFT = 4096
 NOVERLAP = 128
 
 SignalInfo = namedtuple('SignalInfo', 
-                        'mean std_dev hi_thresh current lo_thresh snr ac_snr pre_activation, detection')
+                        'mean std_dev hi_thresh current lo_thresh acoustic snr ac_snr pre_activation detection')
 
 class SoundUtils():
     class BufferTypes(Enum):
@@ -82,7 +82,7 @@ class SoundUtils():
         self.trigger_duration = trigger_duration #seconds
         self.energy_sz = 1023 - self.smoothing_window + 1
         self.energy_skip = self.smoothing_window * self.energy_sz
-        self.sig_data:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.sig_data:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.isReady = False
 
     '''
@@ -327,10 +327,10 @@ class SoundUtils():
         #print("Smoothed Energies | ", smoothed_energies)
         # Step 3: Compute mean and standard deviation of the smoothed energy for dynamic thresholding
          # What if I preclude the amount of input signals I am using for smoothing when calculating the mean and std_dev
-        #mean_energy = np.mean(energies)
-        #std_energy = np.std(energies)
-        mean_energy = np.mean(energies[: -self.energy_skip])
-        std_energy = np.std(energies[: -self.energy_skip])
+        mean_energy = np.mean(energies)
+        std_energy = np.std(energies)
+        #mean_energy = np.mean(energies[: -self.energy_skip])
+        #std_energy = np.std(energies[: -self.energy_skip])
         # Step 4: Detect if current energy exceeds the high threshold (new detection) or is below the low threshold (end of detection)
         current_energy = np.mean(np.trim_zeros(energies[-self.energy_sz:]))  # Most recent energy value
         
@@ -344,11 +344,12 @@ class SoundUtils():
         ac_noise = np.mean(self.acousticBuffer[:-3072])
         if(ac_noise == 0):
             ac_noise = np.inf
-        ac_snr = self.acousticBuffer[-3072:]/ ac_noise
+        ac_snr = np.mean(self.acousticBuffer[-3072:])/ ac_noise
+        ac_energy = np.sum(self.acousticBuffer[-3072:])
         
         # Step 6: Compute the dynamic threshold and apply hysteresis logic
         #high_threshold, low_threshold = self.dynamicThreshold(mean_energy, std_energy, snr)
-        high_threshold, low_threshold = self.dynamicThreshold2(mean_energy, std_energy, ac_snr)
+        high_threshold, low_threshold = self.dynamicThreshold2(mean_energy, std_energy, ac_snr, use_snr=True)
 
         if(self.debug):
             print(f"Mean = {mean_energy} | StdDev = {std_energy}")
@@ -366,7 +367,8 @@ class SoundUtils():
                     print("\n\n--------------------------------Resetting detection!")
         else:
             # Check if current energy exceeds the high threshold to trigger a new detection
-            if (current_energy > high_threshold):
+            #if (current_energy > high_threshold):
+            if (ac_energy >= 3):
                 self.pre_activation = True
                 self.elapsed_t = time.time()-self.trigger_time
                 #print("Elapsed: ", self.elapsed_t)
@@ -378,7 +380,7 @@ class SoundUtils():
                 self.trigger_time = time.time()
                 self.pre_activation = False
         return SignalInfo(mean_energy, std_energy, high_threshold, current_energy, low_threshold, 
-                          snr, ac_snr, self.pre_activation, self.previous_detection)
+                          ac_energy, snr, ac_snr, self.pre_activation, self.previous_detection)
     
     def getSignalAnalysis(self):
         return self.sig_data
@@ -672,7 +674,7 @@ class MissionData:
     name: str
 
 class ROSLayerUtils(object):
-    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy snr acoustic_snr detection isSolved')
+    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy acoustic_energy snr acoustic_snr detection isSolved')
     def __init__(self, debug=False) -> None:
         self.mediaDir = os.path.expanduser("~") + '/current'
         if(not os.path.exists(self.mediaDir)):
@@ -722,8 +724,8 @@ class ROSLayerUtils(object):
                                                 float(info[0]), float(info[1]), float(info[2]), 
                                                 media, 
                                                 float(sigInfo.mean), float(sigInfo.std_dev), 
-                                                float(sigInfo.current), float(sigInfo.snr),
-                                                float(sigInfo.ac_snr), sigInfo.detection, False)
+                                                float(sigInfo.current), float(sigInfo.acoustic),
+                                                float(sigInfo.snr), float(sigInfo.ac_snr), sigInfo.detection, False)
             path = self.getPath(fetchMsnDir=useMsnPath)
             if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
                 with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
