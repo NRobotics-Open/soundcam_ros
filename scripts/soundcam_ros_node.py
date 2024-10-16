@@ -618,13 +618,13 @@ class SoundcamROS(object):
                             rospy.loginfo('Preset sent!')
                             # self.curPreset = req.preset
                             # self.camera.startMeasurement() #start measurement
-                            # start_t = time.time()
-                            # while(not self.camera.isContinuousStream()):
-                            #     rospy.loginfo_throttle(3, "Awaiting camera stream ...")
-                            #     if((time.time() - start_t) >= 15.0):
-                            #         rospy.logwarn("Camera stream taking longer to resume \
-                            #                     \nCamera might be in Error!")
-                            #         break
+                            start_t = time.time()
+                            while(not self.camera.isDetectionReady()):
+                                rospy.loginfo_throttle(3, "Awaiting Detection algo ...")
+                                if((time.time() - start_t) >= 15.0):
+                                    rospy.logwarn("Camera stream taking longer to resume \
+                                                \nCamera might be in Error!")
+                                    break
                         else:
                             rospy.logerr('Unable to send preset!')
                             if(not self.camera.isMeasuring()):

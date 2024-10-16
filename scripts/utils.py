@@ -31,8 +31,8 @@ class SoundUtils():
     def __init__(self, window=500, detectionWin=50, t=10, 
                  minFreq=0, maxFreq=1e5, acFreq=50, specFreq=11,
                  scalingMode:ScalingMode=ScalingMode.OFF, 
-                 dynamic_thresh_f=8,
-                 low_thresh_f=1.5,
+                 hi_thresh_f=1,
+                 low_thresh_f=0.5,
                  smoothing_win=5,
                  trigger_duration=2.0, debug=False) -> None:
         self.debug = debug
@@ -73,7 +73,7 @@ class SoundUtils():
         - Hysteresis
         - Temporal Consistency
         '''
-        self.dyn_threshold_factor = dynamic_thresh_f #1.5 Multiplier for dynamic threshold
+        self.hi_threshold_factor = hi_thresh_f #1.5 Multiplier for dynamic threshold
         self.low_threshold_factor = low_thresh_f # Lower threshold for hysteresis
         self.previous_detection = False
         self.pre_activation = False
@@ -81,6 +81,7 @@ class SoundUtils():
         self.trigger_time = time.time()
         self.trigger_duration = trigger_duration #seconds
         self.energy_sz = 1023 - self.smoothing_window + 1
+        self.energy_skip = self.smoothing_window * self.energy_sz
         self.sig_data:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.isReady = False
 
@@ -295,30 +296,49 @@ class SoundUtils():
     def smoothEnergy(self, energies): # Simple moving average for smoothing returns array of shape (1019,)
         return np.convolve(np.ravel(energies), np.ones(self.smoothing_window)/self.smoothing_window, mode='valid')
     
+    
+    '''
+        Compute the dynamic thresholds w SNR 
+    '''
     def dynamicThreshold(self, mean_energy, std_energy, snr):
         # Dynamic threshold calculation based on mean + k * std
-        ajusted_factor = self.dyn_threshold_factor/ (1 + (snr))
-        return mean_energy + ajusted_factor * std_energy
+        ajusted_factor = self.hi_threshold_factor/ (1 + (snr))
+        return (mean_energy + (ajusted_factor * std_energy), 
+                self.low_threshold_factor * std_energy)
+    
+    '''
+        Compute the dynamic thresholds w/o SNR 
+    '''
+    def dynamicThreshold2(self, mean_energy, std_energy):
+        # Dynamic high threshold calculation based on mean + k * std 
+        # Dynamic low threshold calculation based on mean + h * std 
+        # where k > h
+        return (mean_energy + (self.hi_threshold_factor * std_energy), 
+                mean_energy + (self.low_threshold_factor * std_energy))
     
     def _detectEvent(self, energies):
         # Step 2: Smooth the energy using a sliding window
         #smoothed_energies = self.smoothEnergy(energies)
         #print("Smoothed Energies | ", smoothed_energies)
-         # Step 3: Compute mean and standard deviation of the smoothed energy for dynamic thresholding
-        mean_energy = np.mean(energies)
-        std_energy = np.std(energies)
+        # Step 3: Compute mean and standard deviation of the smoothed energy for dynamic thresholding
+         # What if I preclude the amount of input signals I am using for smoothing when calculating the mean and std_dev
+        #mean_energy = np.mean(energies)
+        #std_energy = np.std(energies)
+        mean_energy = np.mean(energies[: -self.energy_skip])
+        std_energy = np.std(energies[: -self.energy_skip])
         # Step 4: Detect if current energy exceeds the high threshold (new detection) or is below the low threshold (end of detection)
         current_energy = np.mean(np.trim_zeros(energies[-self.energy_sz:]))  # Most recent energy value
         
         # Step 5: Compute SNR 
         noise_energy = np.mean(energies[:-self.energy_sz])
+        #noise_energy = np.mean(energies[:-self.energy_skip]) #don't use the x-recent signals in the calculation
         if(noise_energy == 0):
             noise_energy = np.inf
         snr = current_energy/ noise_energy
         
         # Step 6: Compute the dynamic threshold and apply hysteresis logic
-        high_threshold = self.dynamicThreshold(mean_energy, std_energy, snr)
-        low_threshold = self.low_threshold_factor * std_energy
+        #high_threshold, low_threshold = self.dynamicThreshold(mean_energy, std_energy, snr)
+        high_threshold, low_threshold = self.dynamicThreshold2(mean_energy, std_energy)
 
         if(self.debug):
             print(f"Mean = {mean_energy} | StdDev = {std_energy}")
@@ -402,6 +422,8 @@ class SoundUtils():
         self.specLocalBuffer[:, :] = 0.0
         self.specGlobalBuffer[:, :] = 0.0
         self.energyBuffer[:, :] = 0.0
+        self.cnt = 0
+        self.isReady = False
     
     def dbsum(self, levels, axis=None):
         #print('DBSum Levels: ', levels)

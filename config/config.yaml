@@ -2,7 +2,7 @@
 ip: '192.168.3.101'
 port: 6340
 protocol: 3
-driver_debug: True
+driver_debug: False
 system_run: False #if False: turns off all visualizations & uses ROS publishers
 gui_hostname: 'localhost'
 gui_port: 65432
@@ -53,15 +53,15 @@ overlayConfig: '1000' # [Acoustic, Spectrum, Audio, Thermal] -> only Acoustic im
 
 # Signal Detection parameters
 detection_xy_offset: 25  #offset for centering the detected blob - NOT USED
-dynamic_thresh_factor: 8 #set lower to make the trigger more sensitive
-low_thresh_factor: 1.5 # set higher to make the detector sensitive to signal loss/disappearance
+hi_thresh_factor: 1 #set lower to make the trigger more sensitive
+low_thresh_factor: 0.5 # set higher to make the detector sensitive to signal loss/disappearance -> hystheresis
 smoothing_win: 5 # how many data samples to use for smoothing the signal
 trigger_duration: 2.0 #seconds
 
 ## ROS PARAMETERS
 frame: 'soundcam'
 ros_debug: False
-auto_detect: True
+auto_detect: False
 max_megabytes: 1000 #Megabytes
 min_record_time: 1.0 #seconds
 max_record_time: 5.0 #seconds

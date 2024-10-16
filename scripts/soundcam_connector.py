@@ -77,7 +77,7 @@ class SoundCamConnector(object):
         # manager.start()
         # self.scamUtils = manager.SoundUtils()
         self.scamUtils = SU(window=60, detectionWin=5, acFreq=10, specFreq=4, 
-                            dynamic_thresh_f=self.cfgObj['dynamic_thresh_factor'],
+                            hi_thresh_f=self.cfgObj['hi_thresh_factor'],
                             low_thresh_f=self.cfgObj['low_thresh_factor'],
                             smoothing_win=self.cfgObj['smoothing_win'], 
                             trigger_duration=self.cfgObj['trigger_duration'])
@@ -442,6 +442,16 @@ class SoundCamConnector(object):
     '''
     def updatePreset(self, mode, distance, minFreq, maxFreq,
                      dynamic=3.1, crest=5.0, maximum=None):
+        #set freq range
+        query = self.protocol.writeFrequencyRange(self.invokeId, (minFreq, maxFreq))
+        self.invokeId += 1
+        #self.sendData(query=query)
+
+        #set distance
+        query += self.protocol.writeDistance(self.invokeId, distance)
+        self.invokeId += 1
+        self.sendData(query=query)
+
         self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
                                           max=maximum, crest=crest, minF=minFreq, maxF=maxFreq)
         self.scamUtils.resetBuffers()
@@ -1362,6 +1372,9 @@ class SoundCamConnector(object):
     
     def isContinuousStream(self):
         return self.hasStreamData
+
+    def isDetectionReady(self):
+        return self.scamUtils.isReady
 
     '''
     --------------------------------------------------------------------VISUALIZATION METHODS
