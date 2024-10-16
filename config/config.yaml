@@ -9,24 +9,24 @@ gui_port: 65432
 
 #Streaming parameters
 distance: 3500 #mm
-minFrequency: 10000
+minFrequency: 30000
 maxFrequency: 100000
 camera_W: 640
 camera_H: 480
-acimageFPS: 100 #fps
+acimageFPS: 80 #fps
 acAvg: 0 #0 - fast 1 - slow 2 - impulse
 deviceState: 5 #0-Idle 1-Measuring 2-Streaming 3-Service_1 4-Ultrasonic 5-Ultrasonic+
 dataToSend1: 79 #11000010 #(79) - 11110010 (75) (data) -> AcVid, Vid, ThermalVid, LocalSound, MicLevels, MicRaw, Spectra, SingleMic
 dataToSend2: 1 #1000000 (filters) -> LocalSound, LevelFiltered, RawDataFiltered, IRGain
 heartbeatRate: 300 #Hz - Not used
 cameraLighting: 0 #0-off 1-on
-videoFPS: 50 #fps
+videoFPS: 30 #fps
 
 #Acoustic Video config
 scalingMode: 2 #0-off, 1-Auto (scale with respect to the max in the set region), 2-Smart
-dynamic: 10.0 #dB
+dynamic: 5.0 #dB
 maximum: 54.2 #dB if 0 -> use the max of last 10 seconds
-crest: 15.0 #dB [5 - 15]
+crest: 10.0 #dB [5 - 15]
 
 processVideo: True
 processAcVideo: True
@@ -60,7 +60,7 @@ trigger_duration: 2.0 #seconds
 
 ## ROS PARAMETERS
 frame: 'soundcam'
-ros_debug: False
+ros_debug: True
 auto_detect: False
 max_megabytes: 1000 #Megabytes
 min_record_time: 1.0 #seconds
