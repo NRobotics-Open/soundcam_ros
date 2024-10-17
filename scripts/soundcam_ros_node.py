@@ -65,7 +65,7 @@ class SoundcamROS(object):
         self.prevUUID = ''
         self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset')
         self.curPose = [0.0, 0.0, 90.0]
-        self.signalInfo:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
     def bringUpInterfaces(self):
         rospy.loginfo('Bringing up interfaces ...')
@@ -449,7 +449,8 @@ class SoundcamROS(object):
             if(not self.utils.addMetaData(media=media,isActionPoint=isActPoint, 
                                    id=extras[0], 
                                    info=(extras[1:4]), 
-                                   sigInfo=extras[4],
+                                   sigInfo=extras[5],
+                                   preset=extras[4],
                                    useMsnPath=True)):
                 if(self.debug):
                     rospy.logerr_throttle(1, 'SC| Snapshot failure!')
@@ -537,8 +538,8 @@ class SoundcamROS(object):
                     
                     if(len(media) > 0):
                         self.utils.addMetaData(isActionPoint=isActPoint, media=media, 
-                                               info=info[:-1], sigInfo=info[-1], id=id, 
-                                               useMsnPath=True)
+                                               info=info[:-2], sigInfo=info[-1], id=id, 
+                                               preset=info[-2], useMsnPath=True)
                         self.publishCaptureFeedback(self.capture_pub)
                 else:
                     rospy.loginfo('SC| Recording time %fs is less the minimum specified. Discarding ...' % auto_elapsed_t)
@@ -615,8 +616,9 @@ class SoundcamROS(object):
                         # if(self.camera.isMeasuring()): #stop measurement if running
                         #     self.camera.stopMeasurement()
                         if(self.setPreset(req.preset)):
+                            self.curPreset = req.preset
                             rospy.loginfo('Preset sent!')
-                            # self.curPreset = req.preset
+                            
                             # self.camera.startMeasurement() #start measurement
                             # start_t = time.time()
                             # while(not self.camera.isDetectionReady()):
@@ -758,13 +760,13 @@ class SoundcamROS(object):
         rate = rospy.Rate(15)
         result = False
         cnt = 1
-        past_sig_i:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         rospy.loginfo('Processing goal ...')
         while(not rospy.is_shutdown()):
             if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
                 #Take Snapshots
                 if(self._takeSnapshot(streamType=streamType, 
-                                   extras=(wpId, wpX, wpY, wpTheta, self.signalInfo))):
+                                   extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.signalInfo))):
                     cnt += 1
                     self.act_feedbk.capture_count = cnt
                     self.act_feedbk.currentTime.data = rospy.Time.now()
@@ -788,9 +790,9 @@ class SoundcamROS(object):
                         if(self._saveRecording(auto=True, isActPoint=True, 
                                             streamType=streamType,
                                             start_t=record_start_t, 
-                                            info=(wpX, wpY, wpTheta, past_sig_i), id=wpId)):
+                                            info=(wpX, wpY, wpTheta, self.curPreset, past_sig_i), id=wpId)):
                             cnt += 1
-                            past_sig_i:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                            past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
                             time.sleep(delay)
                     else: # report progress
                         # Capture detection values
@@ -866,7 +868,7 @@ class SoundcamROS(object):
         record_start_t = time.time()
         prevPose = [0.0, 0.0, 0.0]
         firstrun = True
-        past_sig_i:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         while(not rospy.is_shutdown()):
             if(self._isStartup):
                 if(self.attemptConnection()):
@@ -879,7 +881,7 @@ class SoundcamROS(object):
                     self._isStartup = False
                     
             else: 
-                self.signalInfo:SignalInfo = self.camera.getSignalInfo(self.curPreset.presetName)
+                self.signalInfo:SignalInfo = self.camera.getSignalInfo()
                 #if(self.debug): 
                     #Mean Energy, Std Dev, High Energy Thresh, Current Energy, Low Energy Thresh, SNR, detection flag
                     #print(self.signalInfo)
@@ -899,7 +901,7 @@ class SoundcamROS(object):
                             self.recordTrigger = True
                             has_updated_record_start_t = False
                             prevPose = self.curPose
-                            past_sig_i:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                            past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
                         if(self.signalInfo.detection):
                             if(not has_updated_record_start_t):
@@ -910,13 +912,13 @@ class SoundcamROS(object):
                             if(self.recordTrigger and ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
                                 rospy.loginfo('SC| Saving AUTO recording [Autodetect| Timeout] ...')
                                 self.prepareMissionDirectory()
-                                self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, past_sig_i))
+                                self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, self.curPreset, past_sig_i))
                                 prevPose = self.curPose
                         
                         if(not self.signalInfo.detection and self.recordTrigger):
                             rospy.loginfo('SC| Saving AUTO recording [Autodetect| Deactivation] ...')
                             self.prepareMissionDirectory()
-                            self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, past_sig_i))
+                            self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, self.curPreset, past_sig_i))
                             prevPose = self.curPose                  
 
             self.publishDetection(self.signalInfo, self.camera.getBlobData())

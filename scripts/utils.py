@@ -12,7 +12,7 @@ NFFT = 4096
 NOVERLAP = 128
 
 SignalInfo = namedtuple('SignalInfo', 
-                        'presetName mean std_dev hi_thresh current lo_thresh acoustic SNR pre_activation detection')
+                        'mean std_dev hi_thresh current lo_thresh acoustic SNR pre_activation detection')
 
 class SoundUtils():
     class BufferTypes(Enum):
@@ -84,7 +84,7 @@ class SoundUtils():
         self.trigger_thresh = trigger_thresh
         self.energy_sz = 1023 - self.smoothing_window + 1
         self.energy_skip = self.smoothing_window * self.energy_sz
-        self.sig_data:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.sig_data:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.isReady = False
 
     '''
@@ -694,7 +694,8 @@ class MissionData:
     name: str
 
 class ROSLayerUtils(object):
-    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy acoustic_energy snr detection presetName isSolved')
+    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy acoustic_energy snr detection isSolved \
+                           presetName maximumFrequency minimumFrequency distance crest dynamic maximum')
     def __init__(self, debug=False) -> None:
         self.mediaDir = os.path.expanduser("~") + '/current'
         if(not os.path.exists(self.mediaDir)):
@@ -737,16 +738,20 @@ class ROSLayerUtils(object):
         else:
             return self.mediaDir
     
-    def addMetaData(self, media, info, id=None, isActionPoint=False, useMsnPath=False, sigInfo:SignalInfo=None):
+    def addMetaData(self, media, info, id=None, isActionPoint=False, useMsnPath=False, sigInfo:SignalInfo=None, preset=None):
         try:
             assignedId = self.localId if (id is None) else id
+            preset_dt = ('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            if(preset is not None):
+                preset_dt = (preset.presetName, preset.maxFrequency, preset.minFrequency,
+                             preset.distance, preset.crest, preset.dynamic, preset.maximum)
             obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
                                                 float(info[0]), float(info[1]), float(info[2]), 
-                                                media, 
+                                                media,
                                                 float(sigInfo.mean), float(sigInfo.std_dev), 
                                                 float(sigInfo.current), float(sigInfo.acoustic),
-                                                float(sigInfo.SNR), sigInfo.detection, sigInfo.presetName,
-                                                False)
+                                                float(sigInfo.SNR), sigInfo.detection,
+                                                False, *preset_dt)
             path = self.getPath(fetchMsnDir=useMsnPath)
             if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
                 with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:

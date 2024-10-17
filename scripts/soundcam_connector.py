@@ -113,7 +113,7 @@ class SoundCamConnector(object):
         self.visualUp = False
         self.connected = False
         self.is_alive = False
-        self.signalInfo:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         #prepare queues
         self.processes = list()
@@ -1358,8 +1358,7 @@ class SoundCamConnector(object):
         NamedTuple: Mean Energy, Std Dev, High Energy Thresh, Current Energy, Low Energy Thresh, SNR, 
         pre-activation flag, detection flag
     '''
-    def getSignalInfo(self, presetName:str):
-        self.signalInfo._replace(presetName=presetName)
+    def getSignalInfo(self):
         return self.signalInfo
     
     ''' Sets & Returns the scaling Mode for the Acoustic filter '''
