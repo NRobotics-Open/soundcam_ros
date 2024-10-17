@@ -745,7 +745,7 @@ class ROSLayerUtils(object):
                                                 media, 
                                                 float(sigInfo.mean), float(sigInfo.std_dev), 
                                                 float(sigInfo.current), float(sigInfo.acoustic),
-                                                float(sigInfo.snr), sigInfo.detection, sigInfo.presetName,
+                                                float(sigInfo.SNR), sigInfo.detection, sigInfo.presetName,
                                                 False)
             path = self.getPath(fetchMsnDir=useMsnPath)
             if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file

@@ -797,7 +797,7 @@ class SoundcamROS(object):
                         if((not past_sig_i.detection) and self.signalInfo.detection):
                             past_sig_i = self.signalInfo
                         if(self.signalInfo.mean > past_sig_i.mean):
-                            past_sig_i._replace(mean=self.signalInfo.mean, snr=self.signalInfo.snr, 
+                            past_sig_i._replace(mean=self.signalInfo.mean, SNR=self.signalInfo.SNR, 
                                                 std_dev=self.signalInfo.std_dev)
                         if(self.signalInfo.hi_thresh > past_sig_i.hi_thresh):
                             past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
