@@ -399,7 +399,7 @@ class SoundUtils():
             else: 
                 self.trigger_time = time.time()
                 self.pre_activation = False
-        return SignalInfo('', mean_energy, std_energy, high_threshold, current_energy, low_threshold, 
+        return SignalInfo(mean_energy, std_energy, high_threshold, current_energy, low_threshold, 
                           ac_energy, snr, self.pre_activation, self.previous_detection)
     
     def getSignalAnalysis(self):
