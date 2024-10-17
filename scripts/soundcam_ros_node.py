@@ -65,7 +65,7 @@ class SoundcamROS(object):
         self.prevUUID = ''
         self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset')
         self.curPose = [0.0, 0.0, 90.0]
-        self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.signalInfo:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
     def bringUpInterfaces(self):
         rospy.loginfo('Bringing up interfaces ...')
@@ -618,13 +618,13 @@ class SoundcamROS(object):
                             rospy.loginfo('Preset sent!')
                             # self.curPreset = req.preset
                             # self.camera.startMeasurement() #start measurement
-                            start_t = time.time()
-                            while(not self.camera.isDetectionReady()):
-                                rospy.loginfo_throttle(3, "Awaiting Detection algo ...")
-                                if((time.time() - start_t) >= 15.0):
-                                    rospy.logwarn("Camera stream taking longer to resume \
-                                                \nCamera might be in Error!")
-                                    break
+                            # start_t = time.time()
+                            # while(not self.camera.isDetectionReady()):
+                            #     rospy.loginfo_throttle(3, "Awaiting Detection algo ...")
+                            #     if((time.time() - start_t) >= 30.0):
+                            #         rospy.logwarn("Camera stream taking longer to resume \
+                            #                     \nCamera might be in Error!")
+                            #         break
                         else:
                             rospy.logerr('Unable to send preset!')
                             if(not self.camera.isMeasuring()):
@@ -758,7 +758,7 @@ class SoundcamROS(object):
         rate = rospy.Rate(15)
         result = False
         cnt = 1
-        past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        past_sig_i:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         rospy.loginfo('Processing goal ...')
         while(not rospy.is_shutdown()):
             if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
@@ -790,7 +790,7 @@ class SoundcamROS(object):
                                             start_t=record_start_t, 
                                             info=(wpX, wpY, wpTheta, past_sig_i), id=wpId)):
                             cnt += 1
-                            past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                            past_sig_i:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
                             time.sleep(delay)
                     else: # report progress
                         # Capture detection values
@@ -866,7 +866,7 @@ class SoundcamROS(object):
         record_start_t = time.time()
         prevPose = [0.0, 0.0, 0.0]
         firstrun = True
-        past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        past_sig_i:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         while(not rospy.is_shutdown()):
             if(self._isStartup):
                 if(self.attemptConnection()):
@@ -879,10 +879,10 @@ class SoundcamROS(object):
                     self._isStartup = False
                     
             else: 
-                self.signalInfo:SignalInfo = self.camera.getSignalInfo()
-                if(self.debug): 
+                self.signalInfo:SignalInfo = self.camera.getSignalInfo(self.curPreset.presetName)
+                #if(self.debug): 
                     #Mean Energy, Std Dev, High Energy Thresh, Current Energy, Low Energy Thresh, SNR, detection flag
-                    print(self.signalInfo)
+                    #print(self.signalInfo)
                 if(self.missionData.id != 0): #only perform auto-detection when explicitly required
                     if(self.autoDetect):
                         #Collect highest signal info during recording

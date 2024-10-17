@@ -12,7 +12,7 @@ NFFT = 4096
 NOVERLAP = 128
 
 SignalInfo = namedtuple('SignalInfo', 
-                        'mean std_dev hi_thresh current lo_thresh acoustic snr ac_snr pre_activation detection')
+                        'presetName mean std_dev hi_thresh current lo_thresh acoustic SNR pre_activation detection')
 
 class SoundUtils():
     class BufferTypes(Enum):
@@ -33,6 +33,7 @@ class SoundUtils():
                  scalingMode:ScalingMode=ScalingMode.OFF, 
                  hi_thresh_f=1,
                  low_thresh_f=0.5,
+                 trigger_thresh=3,
                  smoothing_win=5,
                  trigger_duration=2.0, debug=False) -> None:
         self.debug = debug
@@ -80,9 +81,10 @@ class SoundUtils():
         self.smoothing_window = smoothing_win  # Sliding window size for energy smoothing
         self.trigger_time = time.time()
         self.trigger_duration = trigger_duration #seconds
+        self.trigger_thresh = trigger_thresh
         self.energy_sz = 1023 - self.smoothing_window + 1
         self.energy_skip = self.smoothing_window * self.energy_sz
-        self.sig_data:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.sig_data:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.isReady = False
 
     '''
@@ -132,6 +134,7 @@ class SoundUtils():
             self.specGlobalBuffer = sa.attach("shm://" + self.shmnames[self.BufferTypes.GLOBAL_SPECTRUM.value])
             self.specLocalBuffer = sa.attach("shm://" + self.shmnames[self.BufferTypes.LOCAL_SPECTRUM.value])
             self.energyBuffer = sa.attach("shm://" + self.shmnames[self.BufferTypes.ENERGY.value])
+            self.noiseBuffer = np.zeros((self.p_getSpecLen(), 1))
             self.frequencies = np.fft.rfftfreq(n=2048, d=1/200000)[2:]
             self.isSpectrumBufferInit = True
             print('Spectrum Ringbuffers ready!')
@@ -175,7 +178,7 @@ class SoundUtils():
         self.cnt += 1
         if(self.cnt > self.window):
             self.cnt = self.window
-        if(self.cnt > self.detectionWindow * 2):
+        if(self.cnt > self.detectionWindow * 1):
             self.isReady = True
     
     def getSpectrumBuffer(self, global_data=True):
@@ -269,29 +272,35 @@ class SoundUtils():
     
     def computeEnergy(self, uselocal=True, getArray=True) -> (float):
         windowToUse = self.detectionWindow if(self.cnt >= self.detectionWindow) else self.cnt
-        if (uselocal):
-            arr = self.specLocalBuffer[-windowToUse:, :]
-        else:
-            arr = self.specGlobalBuffer[-windowToUse:, :]
+        #if (uselocal):
+        filt_arr = self.specLocalBuffer[-windowToUse:, :]
+        #else:
+        unfilt_arr = self.specGlobalBuffer[-windowToUse:, :]
         # Initialize energies to zero
         energies = np.zeros(1023, dtype=np.float32)
+        noise = np.zeros(1023, dtype=np.float32)
         # Compute the energy for each time sample
-        for s in range(arr.shape[0]):  # iterate over each time sample
-            bin = arr[s, :]  # Get the frequency bin for the current time sample (shape: 1023,)
+        for s in range(filt_arr.shape[0]):  # iterate over each time sample
+            filt_bin = filt_arr[s, :]  # Get the frequency bin for the current time sample (shape: 1023,)
+            unfilt_bin = unfilt_arr[s, :]
             #print('Bin contains: ', bin)
             # Iterate over each frequency and apply the frequency mask
             for i, freq in enumerate(self.frequencies):
                 if self.minFreq <= freq <= self.maxFreq:  # Only consider frequencies within the specified range
-                    energies[i] = self.dbsum([energies[i], bin[i]])
-                    #print('Processing Bin element at: ', i, ' with val: ', bin[i])
+                    energies[i] = self.dbsum([energies[i], filt_bin[i]])
+                else:
+                    noise[i] = self.dbsum([noise[i], unfilt_bin[i]])
             #print('Bin at ',s, ' Energy: ', np.sum(energies))
         # Shift the energy buffer in-place (without np.roll) 
         self.energyBuffer[:-self.energy_sz, :] = self.energyBuffer[self.energy_sz:, :]
         energies = energies.reshape(-1, 1)
-        #print("Current Energy: ", self.dbmean(energies))
         self.energyBuffer[-self.energy_sz:, :] = self.smoothEnergy(energies).reshape(-1,1)
+        
+        self.noiseBuffer[:-self.energy_sz, :] = self.noiseBuffer[self.energy_sz:, :]
+        noise = noise.reshape(-1, 1)
+        self.noiseBuffer[-self.energy_sz:, :] = self.smoothEnergy(noise).reshape(-1,1)
         if(self.isReady):
-            self.sig_data = self._detectEvent(self.energyBuffer)
+            self.sig_data = self._detectEvent(self.energyBuffer, self.noiseBuffer)
     
     def smoothEnergy(self, energies): # Simple moving average for smoothing returns array of shape (1019,)
         return np.convolve(np.ravel(energies), np.ones(self.smoothing_window)/self.smoothing_window, mode='valid')
@@ -314,6 +323,8 @@ class SoundUtils():
         # Dynamic low threshold calculation based on mean + h * std 
         # where k > h
         if(use_snr):
+            if(math.isnan(snr)):
+                snr = 0.0
             adj_hi = self.hi_threshold_factor/ (1 + (snr))
             adj_lo = self.low_threshold_factor/ (1 + (snr))
             return (mean_energy + (adj_hi * std_energy), 
@@ -321,45 +332,54 @@ class SoundUtils():
         return (mean_energy + (self.hi_threshold_factor * std_energy), 
                 mean_energy + (self.low_threshold_factor * std_energy))
     
-    def _detectEvent(self, energies):
+    def _detectEvent(self, energies, noise):
         # Step 2: Smooth the energy using a sliding window
         #smoothed_energies = self.smoothEnergy(energies)
         #print("Smoothed Energies | ", smoothed_energies)
         # Step 3: Compute mean and standard deviation of the smoothed energy for dynamic thresholding
          # What if I preclude the amount of input signals I am using for smoothing when calculating the mean and std_dev
-        mean_energy = np.mean(energies)
-        std_energy = np.std(energies)
+        mean_energy = np.nanmean(energies)
+        std_energy = np.nanstd(energies)
         #mean_energy = np.mean(energies[: -self.energy_skip])
         #std_energy = np.std(energies[: -self.energy_skip])
         # Step 4: Detect if current energy exceeds the high threshold (new detection) or is below the low threshold (end of detection)
-        current_energy = np.mean(np.trim_zeros(energies[-self.energy_sz:]))  # Most recent energy value
-        
+        current_energy = np.nanmean(np.trim_zeros(energies[-self.energy_sz:]))  # Most recent energy value
         # Step 5: Compute SNR 
-        noise_energy = np.mean(energies[:-self.energy_sz])
-        #noise_energy = np.mean(energies[:-self.energy_skip]) #don't use the x-recent signals in the calculation
-        if(noise_energy == 0):
-            noise_energy = np.inf
-        snr = current_energy/ noise_energy
-            # SNR compute with acoustic data
-        ac_noise = np.mean(self.acousticBuffer[:-3072])
-        if(ac_noise == 0):
-            ac_noise = np.inf
-        ac_snr = np.mean(self.acousticBuffer[-3072:])/ ac_noise
+        # noise_energy = np.mean(energies[:-self.energy_sz])
+        # #noise_energy = np.mean(energies[:-self.energy_skip]) #don't use the x-recent signals in the calculation
+        # if(noise_energy == 0):
+        #     noise_energy = np.inf
+        # snr = current_energy/ noise_energy
+        # SNR compute with acoustic data
+        # ac_avg = np.nanmean(self.acousticBuffer[:-3072])
+        # if((ac_avg == 0) or math.isnan(ac_avg)):
+        #     ac_avg = np.inf
+        # ac_snr = np.nanmean(self.acousticBuffer[-3072:])/ ac_avg
+        # if(math.isnan(ac_snr)):
+        #     ac_snr = 0.0
         ac_energy = np.sum(self.acousticBuffer[-3072:])
+        # print("Ac SNR --- ", ac_snr)
+        # if(ac_energy != 0.0):
+        #     print(f"acoustic-energy = {ac_energy}")
+
+        # Step 5: Compute SNR w Noise 
+        noise_mean = np.nanmean(noise)
+        if(noise_mean == 0):
+            noise_mean = np.inf
+        snr = current_energy/ noise_mean
+        #print("Energy SNR %f : NOISE SNR %f : Mean %f" %(snr, noise_mean))
         
         # Step 6: Compute the dynamic threshold and apply hysteresis logic
         #high_threshold, low_threshold = self.dynamicThreshold(mean_energy, std_energy, snr)
-        high_threshold, low_threshold = self.dynamicThreshold2(mean_energy, std_energy, ac_snr, use_snr=True)
+        high_threshold, low_threshold = self.dynamicThreshold2(mean_energy, std_energy, snr, use_snr=True)
 
-        if(self.debug):
-            print(f"Mean = {mean_energy} | StdDev = {std_energy}")
-            print(f"snr = {snr}")
-            print(f"acoustic-snr = {ac_snr}")
-            print(f"hi_thresh = {high_threshold} | cur = {current_energy} | lo_thresh = {low_threshold}")
+        #if(self.debug):
+        
         
         if self.previous_detection:
             # We are currently detecting, check if energy falls below low threshold
-            if current_energy < low_threshold:
+            #if current_energy < low_threshold:
+            if (ac_energy < self.trigger_thresh):
                 self.previous_detection = False  # Reset detection
                 self.pre_activation = False
                 self.timer_set = False
@@ -368,7 +388,7 @@ class SoundUtils():
         else:
             # Check if current energy exceeds the high threshold to trigger a new detection
             #if (current_energy > high_threshold):
-            if (ac_energy >= 3):
+            if (ac_energy >= self.trigger_thresh):
                 self.pre_activation = True
                 self.elapsed_t = time.time()-self.trigger_time
                 #print("Elapsed: ", self.elapsed_t)
@@ -379,8 +399,8 @@ class SoundUtils():
             else: 
                 self.trigger_time = time.time()
                 self.pre_activation = False
-        return SignalInfo(mean_energy, std_energy, high_threshold, current_energy, low_threshold, 
-                          ac_energy, snr, ac_snr, self.pre_activation, self.previous_detection)
+        return SignalInfo('', mean_energy, std_energy, high_threshold, current_energy, low_threshold, 
+                          ac_energy, snr, self.pre_activation, self.previous_detection)
     
     def getSignalAnalysis(self):
         return self.sig_data
@@ -674,7 +694,7 @@ class MissionData:
     name: str
 
 class ROSLayerUtils(object):
-    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy acoustic_energy snr acoustic_snr detection isSolved')
+    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy acoustic_energy snr detection presetName isSolved')
     def __init__(self, debug=False) -> None:
         self.mediaDir = os.path.expanduser("~") + '/current'
         if(not os.path.exists(self.mediaDir)):
@@ -725,7 +745,8 @@ class ROSLayerUtils(object):
                                                 media, 
                                                 float(sigInfo.mean), float(sigInfo.std_dev), 
                                                 float(sigInfo.current), float(sigInfo.acoustic),
-                                                float(sigInfo.snr), float(sigInfo.ac_snr), sigInfo.detection, False)
+                                                float(sigInfo.snr), sigInfo.detection, sigInfo.presetName,
+                                                False)
             path = self.getPath(fetchMsnDir=useMsnPath)
             if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
                 with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:

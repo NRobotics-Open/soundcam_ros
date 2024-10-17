@@ -79,6 +79,7 @@ class SoundCamConnector(object):
         self.scamUtils = SU(window=60, detectionWin=5, acFreq=10, specFreq=4, 
                             hi_thresh_f=self.cfgObj['hi_thresh_factor'],
                             low_thresh_f=self.cfgObj['low_thresh_factor'],
+                            trigger_thresh=self.cfgObj['trigger_threshold'],
                             smoothing_win=self.cfgObj['smoothing_win'], 
                             trigger_duration=self.cfgObj['trigger_duration'])
         self.objTracker = EuclideanDistTracker()
@@ -112,7 +113,7 @@ class SoundCamConnector(object):
         self.visualUp = False
         self.connected = False
         self.is_alive = False
-        self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.signalInfo:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
         #prepare queues
         self.processes = list()
@@ -440,9 +441,10 @@ class SoundCamConnector(object):
                 acoustic Averaging
             - Updates the acoustic filter
     '''
-    def updatePreset(self, mode, distance, minFreq, maxFreq,
-                     dynamic=3.1, crest=5.0, maximum=None):
+    def updatePreset(self, mode:int, distance:int, minFreq:int, maxFreq:int,
+                     dynamic:float=3.1, crest:float=5.0, maximum=None):
         #set freq range
+        self.invokeId += 1
         query = self.protocol.writeFrequencyRange(self.invokeId, (minFreq, maxFreq))
         self.invokeId += 1
         #self.sendData(query=query)
@@ -451,7 +453,6 @@ class SoundCamConnector(object):
         query += self.protocol.writeDistance(self.invokeId, distance)
         self.invokeId += 1
         self.sendData(query=query)
-
         self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
                                           max=maximum, crest=crest, minF=minFreq, maxF=maxFreq)
         self.scamUtils.resetBuffers()
@@ -1357,7 +1358,8 @@ class SoundCamConnector(object):
         NamedTuple: Mean Energy, Std Dev, High Energy Thresh, Current Energy, Low Energy Thresh, SNR, 
         pre-activation flag, detection flag
     '''
-    def getSignalInfo(self):
+    def getSignalInfo(self, presetName:str):
+        self.signalInfo._replace(presetName=presetName)
         return self.signalInfo
     
     ''' Sets & Returns the scaling Mode for the Acoustic filter '''
