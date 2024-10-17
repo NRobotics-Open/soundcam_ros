@@ -899,7 +899,7 @@ class SoundcamROS(object):
                             self.recordTrigger = True
                             has_updated_record_start_t = False
                             prevPose = self.curPose
-                            past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                            past_sig_i:SignalInfo = SignalInfo('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
                         if(self.signalInfo.detection):
                             if(not has_updated_record_start_t):
