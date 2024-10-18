@@ -378,8 +378,7 @@ class SoundUtils():
         
         if self.previous_detection:
             # We are currently detecting, check if energy falls below low threshold
-            #if current_energy < low_threshold:
-            if (ac_energy < self.trigger_thresh):
+            if ((ac_energy < self.trigger_thresh) and (current_energy < low_threshold)):
                 self.previous_detection = False  # Reset detection
                 self.pre_activation = False
                 self.timer_set = False
@@ -387,8 +386,7 @@ class SoundUtils():
                     print("\n\n--------------------------------Resetting detection!")
         else:
             # Check if current energy exceeds the high threshold to trigger a new detection
-            #if (current_energy > high_threshold):
-            if (ac_energy >= self.trigger_thresh):
+            if ((ac_energy >= self.trigger_thresh) or (current_energy > high_threshold)):
                 self.pre_activation = True
                 self.elapsed_t = time.time()-self.trigger_time
                 #print("Elapsed: ", self.elapsed_t)

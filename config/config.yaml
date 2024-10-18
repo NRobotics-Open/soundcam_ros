@@ -54,7 +54,7 @@ overlayConfig: '1000' # [Acoustic, Spectrum, Audio, Thermal] -> only Acoustic im
 # Signal Detection parameters
 detection_xy_offset: 25  #offset for centering the detected blob - NOT USED
 hi_thresh_factor: 3.5 #set lower to make the trigger more sensitive
-low_thresh_factor: 2.5 # set higher to make the detector sensitive to signal loss/disappearance -> hystheresis
+low_thresh_factor: 2.7 # set higher to make the detector sensitive to signal loss/disappearance -> hystheresis
 smoothing_win: 3 # how many data samples to use for smoothing the signal
 trigger_duration: 2.0 #seconds
 trigger_threshold: 9
