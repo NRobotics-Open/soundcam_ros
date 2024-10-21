@@ -306,6 +306,7 @@ class SoundcamROS(object):
     ''' Sends alert to other nodes about current detections '''
     def publishDetection(self, sigInfo:SignalInfo, blobCoords:list):
         if(self.detection_pub.get_num_connections() > 0):
+            #mean std_dev hi_thresh current lo_thresh acoustic SNR pre_activation detection
             msg = SoundcamDetection()
             msg.header.frame_id = self.cfg['frame']
             msg.header.stamp = rospy.Time.now()
@@ -315,7 +316,8 @@ class SoundcamROS(object):
             msg.highEnergyThreshold.data = sigInfo.hi_thresh
             msg.currentEnergy.data = sigInfo.current
             msg.lowEnergyThreshold.data = sigInfo.lo_thresh
-            msg.snr.data = sigInfo.snr
+            msg.snr.data = sigInfo.SNR
+            msg.acousticEnergy.data = sigInfo.acoustic
             msg.preActivation.data = sigInfo.pre_activation
             msg.detection.data = sigInfo.detection
             msg.blobXY = blobCoords
@@ -620,13 +622,13 @@ class SoundcamROS(object):
                             rospy.loginfo('Preset sent!')
                             
                             # self.camera.startMeasurement() #start measurement
-                            # start_t = time.time()
-                            # while(not self.camera.isDetectionReady()):
-                            #     rospy.loginfo_throttle(3, "Awaiting Detection algo ...")
-                            #     if((time.time() - start_t) >= 30.0):
-                            #         rospy.logwarn("Camera stream taking longer to resume \
-                            #                     \nCamera might be in Error!")
-                            #         break
+                            start_t = time.time()
+                            while((not self.camera.isDetectionReady()) and (self.signalInfo.mean == 0.0)):
+                                rospy.loginfo_throttle(5, "Awaiting Detection algo ...")
+                                if((time.time() - start_t) >= 30.0):
+                                    rospy.logwarn("Camera stream taking longer to resume \
+                                                \nCamera might be in Error!")
+                                    break
                         else:
                             rospy.logerr('Unable to send preset!')
                             if(not self.camera.isMeasuring()):
@@ -719,106 +721,118 @@ class SoundcamROS(object):
     from diagnostic_msgs.msg import KeyValue
     def executeCB(self, goal: SoundcamGoal):
         rospy.loginfo('SC| Received goal!')
-        #save detection/recording parameters
-        autoDetectVar = self.autoDetect
-        self.autoDetect = False
-        self.recordTrigger = False #deactivate record triggers
-        #extract parameters
-        streamType = SoundcamServiceRequest.ALL
-        rospy.loginfo('Extracting goal parameters ...')
-        for param in goal.parameters:
-            if(param.key == 'uuid'):
-                self.missionData.uuid = param.value
-            if(param.key == 'delay'):
-                delay = int(param.value)
-            if(param.key == 'numCaptures'):
-                numCaptures = int(param.value)
-            if(param.key == 'recordTime'):
-                recordTime = float(param.value) * self._f_mul
-            if(param.key == 'mediaType'):
-                if(param.value != ''):
-                    media = [int(x) for x in param.value.split('|')]
-                    if(SoundcamServiceRequest.ALL not in media):
-                        streamType = media
-            if(param.key == 'missionId'):
-                self.missionData.id = int(param.value)
-            if(param.key == 'missionName'):
-                self.missionData.name = param.value
-            if(param.key == 'waypointId'):
-                wpId = int(param.value)
-            if(param.key == 'waypointX'):
-                wpX = float(param.value)
-            if(param.key == 'waypointY'):
-                wpY = float(param.value)
-            if(param.key == 'waypointTheta'):
-                wpTheta = float(param.value)
+
+        start_t = time.time()
+        can_proceed = True
+        while((not self.camera.isDetectionReady()) and (self.signalInfo.mean == 0.0)):
+            rospy.loginfo_throttle(5, "Awaiting Detection algorithm to resume ...")
+            if((time.time() - start_t) >= 30.0):
+                can_proceed = False
+                rospy.logerr("SC| Camera in Error!")
+                rospy.logerr("SC| Goal will be aborted!")
+                break
         
-        #prepare directory
-        self.prepareMissionDirectory()
+        if(can_proceed):
+            #save detection/recording parameters
+            autoDetectVar = self.autoDetect
+            self.autoDetect = False
+            self.recordTrigger = False #deactivate record triggers
+            #extract parameters
+            streamType = SoundcamServiceRequest.ALL
+            rospy.loginfo('Extracting goal parameters ...')
+            for param in goal.parameters:
+                if(param.key == 'uuid'):
+                    self.missionData.uuid = param.value
+                if(param.key == 'delay'):
+                    delay = int(param.value)
+                if(param.key == 'numCaptures'):
+                    numCaptures = int(param.value)
+                if(param.key == 'recordTime'):
+                    recordTime = float(param.value) * self._f_mul
+                if(param.key == 'mediaType'):
+                    if(param.value != ''):
+                        media = [int(x) for x in param.value.split('|')]
+                        if(SoundcamServiceRequest.ALL not in media):
+                            streamType = media
+                if(param.key == 'missionId'):
+                    self.missionData.id = int(param.value)
+                if(param.key == 'missionName'):
+                    self.missionData.name = param.value
+                if(param.key == 'waypointId'):
+                    wpId = int(param.value)
+                if(param.key == 'waypointX'):
+                    wpX = float(param.value)
+                if(param.key == 'waypointY'):
+                    wpY = float(param.value)
+                if(param.key == 'waypointTheta'):
+                    wpTheta = float(param.value)
+            
+            #prepare directory
+            self.prepareMissionDirectory()
 
-        #run while loop
-        rate = rospy.Rate(15)
-        result = False
-        cnt = 1
-        past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
-        rospy.loginfo('Processing goal ...')
-        while(not rospy.is_shutdown()):
-            if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
-                #Take Snapshots
-                if(self._takeSnapshot(streamType=streamType, 
-                                   extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.signalInfo))):
-                    cnt += 1
-                    self.act_feedbk.capture_count = cnt
-                    self.act_feedbk.currentTime.data = rospy.Time.now()
-                    self.act_srvr.publish_feedback(self.act_feedbk)
-                    time.sleep(delay)
-                else:
-                    rospy.logerr('SC| Snapshot failed!')
-                    break
-
-                if(cnt > numCaptures):
-                    result = True
-                    break
-            elif((recordTime > self.cfg['min_record_time']) and (numCaptures > 0)):
-                #Make Recordings
-                if(not self.recordTrigger): #start recording
-                    self.recordTrigger = True
-                    record_start_t = time.time()
-                else: #while recording
-                    if((time.time()-record_start_t) >= recordTime): #save recording
-                        rospy.loginfo('SC| Saving recording ...')
-                        if(self._saveRecording(auto=True, isActPoint=True, 
-                                            streamType=streamType,
-                                            start_t=record_start_t, 
-                                            info=(wpX, wpY, wpTheta, self.curPreset, past_sig_i), id=wpId)):
-                            cnt += 1
-                            past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
-                            time.sleep(delay)
-                    else: # report progress
-                        # Capture detection values
-                        if((not past_sig_i.detection) and self.signalInfo.detection):
-                            past_sig_i = self.signalInfo
-                        if(self.signalInfo.mean > past_sig_i.mean):
-                            past_sig_i._replace(mean=self.signalInfo.mean, SNR=self.signalInfo.SNR, 
-                                                std_dev=self.signalInfo.std_dev)
-                        if(self.signalInfo.hi_thresh > past_sig_i.hi_thresh):
-                            past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
-                        if((past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < past_sig_i.lo_thresh)):
-                            past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
-                        
-                        rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
+            #run while loop
+            rate = rospy.Rate(15)
+            result = False
+            cnt = 1
+            past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+            rospy.loginfo('Processing goal ...')
+            while(not rospy.is_shutdown()):
+                if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
+                    #Take Snapshots
+                    if(self._takeSnapshot(streamType=streamType, 
+                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.signalInfo))):
+                        cnt += 1
                         self.act_feedbk.capture_count = cnt
                         self.act_feedbk.currentTime.data = rospy.Time.now()
                         self.act_srvr.publish_feedback(self.act_feedbk)
-                    
+                        time.sleep(delay)
+                    else:
+                        rospy.logerr('SC| Snapshot failed!')
+                        break
+
                     if(cnt > numCaptures):
                         result = True
                         break
-            else:
-                rospy.logerr('SC| Snapshot nichts zu tun!')
-                result = False
-                break
-            rate.sleep()
+                elif((recordTime > self.cfg['min_record_time']) and (numCaptures > 0)):
+                    #Make Recordings
+                    if(not self.recordTrigger): #start recording
+                        self.recordTrigger = True
+                        record_start_t = time.time()
+                    else: #while recording
+                        if((time.time()-record_start_t) >= recordTime): #save recording
+                            rospy.loginfo('SC| Saving recording ...')
+                            if(self._saveRecording(auto=True, isActPoint=True, 
+                                                streamType=streamType,
+                                                start_t=record_start_t, 
+                                                info=(wpX, wpY, wpTheta, self.curPreset, past_sig_i), id=wpId)):
+                                cnt += 1
+                                past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                                time.sleep(delay)
+                        else: # report progress
+                            # Capture detection values
+                            if((not past_sig_i.detection) and self.signalInfo.detection):
+                                past_sig_i = self.signalInfo
+                            if(self.signalInfo.mean > past_sig_i.mean):
+                                past_sig_i._replace(mean=self.signalInfo.mean, SNR=self.signalInfo.SNR, 
+                                                    std_dev=self.signalInfo.std_dev)
+                            if(self.signalInfo.hi_thresh > past_sig_i.hi_thresh):
+                                past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
+                            if((past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < past_sig_i.lo_thresh)):
+                                past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
+                            
+                            rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
+                            self.act_feedbk.capture_count = cnt
+                            self.act_feedbk.currentTime.data = rospy.Time.now()
+                            self.act_srvr.publish_feedback(self.act_feedbk)
+                        
+                        if(cnt > numCaptures):
+                            result = True
+                            break
+                else:
+                    rospy.logerr('SC| Snapshot nichts zu tun!')
+                    result = False
+                    break
+                rate.sleep()
 
         #on loop exit
         self.act_result.result = result
