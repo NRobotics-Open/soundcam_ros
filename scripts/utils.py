@@ -708,7 +708,6 @@ class ROSLayerUtils(object):
         self.missionID = None
         self.missionName = None
         self.path = None
-        self.metaData = dict({'datapoints':[], 'actionpoints':[]})
         self.localId = 1
         self.debug = debug
 
@@ -736,7 +735,7 @@ class ROSLayerUtils(object):
         else:
             return self.mediaDir
     
-    def addMetaData(self, media, info, id=None, isActionPoint=False, useMsnPath=False, sigInfo:SignalInfo=None, preset=None):
+    def addMetaData(self, media, info, id=None, isActionPoint=False, preset=None, loop=1, sigInfo:SignalInfo=None, useMsnPath=False):
         try:
             assignedId = self.localId if (id is None) else id
             preset_dt = ('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -751,22 +750,28 @@ class ROSLayerUtils(object):
                                                 float(sigInfo.SNR), sigInfo.detection,
                                                 False, *preset_dt)
             path = self.getPath(fetchMsnDir=useMsnPath)
+            loop = str(loop)
             if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
                 with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
                     self.metaData = yaml.safe_load(infofile)
-            
+                    #check by the current loop
+                    if(loop not in self.metaData.keys()):
+                        self.metaData[loop] = {'datapoints':[], 'actionpoints':[]}
+            else:
+                self.metaData = dict({loop: {'datapoints':[], 'actionpoints':[]}})
+
             hasId = False
             if(isActionPoint):
-                for obj_old in self.metaData['actionpoints']:
+                for obj_old in self.metaData[loop]['actionpoints']: #check if actionpoint in metadata
                     if(obj_old['id'] == assignedId):
                         hasId = True
                         for dt in obj.media:
                             obj_old['media'].append(dt)
                         break
                 if(not hasId):
-                    self.metaData['actionpoints'].append(obj._asdict())
+                    self.metaData[loop]['actionpoints'].append(obj._asdict())
             else:
-                for obj_old in self.metaData['datapoints']:
+                for obj_old in self.metaData[loop]['datapoints']: #check if datapoint in metadata
                     #print('Existing content: ', obj_old)
                     if(obj_old['id'] == assignedId):
                         hasId = True
@@ -774,7 +779,7 @@ class ROSLayerUtils(object):
                             obj_old['media'].append(dt)
                         break
                 if(not hasId):
-                    self.metaData['datapoints'].append(obj._asdict())
+                    self.metaData[loop]['datapoints'].append(obj._asdict())
                 self.localId += 1
 
             with open(os.path.join(path, 'meta-data.yaml') , 'w') as infofile: #write meta data file

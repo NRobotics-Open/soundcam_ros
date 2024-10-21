@@ -65,6 +65,7 @@ class SoundcamROS(object):
         self.prevUUID = ''
         self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset')
         self.curPose = [0.0, 0.0, 90.0]
+        self.curLoop = 1
         self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
     def bringUpInterfaces(self):
@@ -451,8 +452,9 @@ class SoundcamROS(object):
             if(not self.utils.addMetaData(media=media,isActionPoint=isActPoint, 
                                    id=extras[0], 
                                    info=(extras[1:4]), 
-                                   sigInfo=extras[5],
                                    preset=extras[4],
+                                   loop=extras[5],
+                                   sigInfo=extras[6],
                                    useMsnPath=True)):
                 if(self.debug):
                     rospy.logerr_throttle(1, 'SC| Snapshot failure!')
@@ -540,8 +542,9 @@ class SoundcamROS(object):
                     
                     if(len(media) > 0):
                         self.utils.addMetaData(isActionPoint=isActPoint, media=media, 
-                                               info=info[:-2], sigInfo=info[-1], id=id, 
-                                               preset=info[-2], useMsnPath=True)
+                                               info=info[:-3], id=id, 
+                                               preset=info[-3], loop=info[-2],sigInfo=info[-1], 
+                                               useMsnPath=True)
                         self.publishCaptureFeedback(self.capture_pub)
                 else:
                     rospy.loginfo('SC| Recording time %fs is less the minimum specified. Discarding ...' % auto_elapsed_t)
@@ -612,6 +615,8 @@ class SoundcamROS(object):
                             self.missionData.id = int(param.value)
                         if(param.key == 'missionName'):
                             self.missionData.name = param.value
+                        if(param.key == 'currentLoop'):
+                            self.curLoop = int(param.value)
 
                 if(req.preset.hasPreset): #Configure camera preset
                     if(req.preset.presetName != self.curPreset.presetName):
@@ -758,6 +763,8 @@ class SoundcamROS(object):
                     self.missionData.id = int(param.value)
                 if(param.key == 'missionName'):
                     self.missionData.name = param.value
+                if(param.key == 'currentLoop'):
+                    self.curLoop = int(param.value)
                 if(param.key == 'waypointId'):
                     wpId = int(param.value)
                 if(param.key == 'waypointX'):
@@ -780,7 +787,7 @@ class SoundcamROS(object):
                 if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
                     #Take Snapshots
                     if(self._takeSnapshot(streamType=streamType, 
-                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.signalInfo))):
+                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.curLoop, self.signalInfo))):
                         cnt += 1
                         self.act_feedbk.capture_count = cnt
                         self.act_feedbk.currentTime.data = rospy.Time.now()
@@ -804,7 +811,7 @@ class SoundcamROS(object):
                             if(self._saveRecording(auto=True, isActPoint=True, 
                                                 streamType=streamType,
                                                 start_t=record_start_t, 
-                                                info=(wpX, wpY, wpTheta, self.curPreset, past_sig_i), id=wpId)):
+                                                info=(wpX, wpY, wpTheta, self.curPreset, self.curLoop, past_sig_i), id=wpId)):
                                 cnt += 1
                                 past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
                                 time.sleep(delay)
