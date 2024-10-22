@@ -780,7 +780,7 @@ class SoundcamROS(object):
             #run while loop
             rate = rospy.Rate(15)
             result = False
-            cnt = 1
+            cnt = 0
             past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
             rospy.loginfo('Processing goal ...')
             while(not rospy.is_shutdown()):
