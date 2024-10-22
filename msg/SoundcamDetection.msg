@@ -1,7 +1,7 @@
 std_msgs/Header header
 
 soundcam_ros/Preset preset
-std_msgs/UInt32[] blobXY
+float32[] blobXY
 std_msgs/Float32 meanEnergy
 std_msgs/Float32 stddev
 std_msgs/Float32 highEnergyThreshold
