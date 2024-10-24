@@ -61,7 +61,7 @@ trigger_threshold: 9
 
 ## ROS PARAMETERS
 frame: 'soundcam'
-ros_debug: True
+ros_debug: False
 auto_detect: False
 max_megabytes: 1000 #Megabytes
 min_record_time: 1.0 #seconds

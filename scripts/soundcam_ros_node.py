@@ -943,7 +943,7 @@ class SoundcamROS(object):
                             prevPose = self.curPose                  
 
             self.publishDetection(self.signalInfo, self.camera.getBlobData())
-            self.publishPreset()
+            #self.publishPreset()
             if(not self.camera.isAlive()):
                 rospy.logwarn('Camera disconnected!')
                 rospy.loginfo('Reconnection attempt in 2 seconds ...')
