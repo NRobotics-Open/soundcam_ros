@@ -690,6 +690,7 @@ class MissionData:
     uuid: str
     id: int
     name: str
+    result_dir: str
 
 class ROSLayerUtils(object):
     DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy acoustic_energy snr detection isSolved \
@@ -711,14 +712,18 @@ class ROSLayerUtils(object):
         self.localId = 1
         self.debug = debug
 
-    def prepareDirectory(self, id, name):
+    def prepareDirectory(self, id, name, path=None):
         self.missionID = id
         self.missionName = name
-        today = datetime.now().strftime("%Y_%m_%d")
-        msn_time = datetime.now().strftime("%H_%M")
-        self.path = os.path.join(self.msnDir, id, today, msn_time)
-        if(not os.path.exists(self.path)): 
-            os.makedirs(self.path)
+        if((len(path) > 0) and os.path.exists(path)):
+            self.path = path
+            self.localId = 1 #reset internal id
+        else:
+            today = datetime.now().strftime("%Y_%m_%d")
+            msn_time = datetime.now().strftime("%H_%M")
+            self.path = os.path.join(self.msnDir, id, today, msn_time)
+            if(not os.path.exists(self.path)): 
+                os.makedirs(self.path)
         self.localId = 1 #reset internal id
     
     def getUniqueName(self, isImg=True, suffix=''):

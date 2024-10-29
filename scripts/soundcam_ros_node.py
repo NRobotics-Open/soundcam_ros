@@ -63,7 +63,7 @@ class SoundcamROS(object):
         self.devStr = list()
         self.pubDevStream = self.cfg['publish_dev']
         self.prevUUID = ''
-        self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset')
+        self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset', None)
         self.curPose = [0.0, 0.0, 90.0]
         self.curLoop = 1
         self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -617,6 +617,8 @@ class SoundcamROS(object):
                             self.missionData.name = param.value
                         if(param.key == 'currentLoop'):
                             self.curLoop = int(param.value)
+                        if(param.key == 'resultDirectory'):
+                            self.missionData.result_dir = param.value
 
                 if(req.preset.hasPreset): #Configure camera preset
                     if(req.preset.presetName != self.curPreset.presetName):
@@ -717,7 +719,9 @@ class SoundcamROS(object):
 
     def prepareMissionDirectory(self):
         if(self.prevUUID != self.missionData.uuid):
-            self.utils.prepareDirectory(str(self.missionData.id), self.missionData.name)
+            self.utils.prepareDirectory(str(self.missionData.id), 
+                                        self.missionData.name, 
+                                        self.missionData.result_dir)
             self.prevUUID = self.missionData.uuid
             if(self.debug):
                 rospy.loginfo('UUID - %s' % self.missionData.uuid)
@@ -773,6 +777,8 @@ class SoundcamROS(object):
                     wpY = float(param.value)
                 if(param.key == 'waypointTheta'):
                     wpTheta = float(param.value)
+                if(param.key == 'resultDirectory'):
+                    self.missionData.result_dir = param.value
             
             #prepare directory
             self.prepareMissionDirectory()
