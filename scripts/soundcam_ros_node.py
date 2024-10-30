@@ -15,7 +15,7 @@ from soundcam_ros.msg import SoundcamStatus, SoundcamDetection, \
     Preset
 from soundcam_ros.srv import SoundcamService, SoundcamServiceRequest, \
     SoundcamServiceResponse
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, CameraInfo
 from diagnostic_msgs.msg import KeyValue
 import actionlib, threading, numpy as np
 from cv_bridge import CvBridge
@@ -81,6 +81,7 @@ class SoundcamROS(object):
             self.detection_pub = rospy.Publisher(self.cfg['frame'] + '/detection', SoundcamDetection, queue_size=5)
             self.preset_pub = rospy.Publisher(self.cfg['frame'] + '/preset', Preset, queue_size=5)
             self.capture_pub = rospy.Publisher(self.cfg['capture_feedback_topic'], Bool, queue_size=1)
+            self.caminfo_pub = rospy.Publisher(self.cfg['frame'] + '/CameraInfo', CameraInfo, queue_size=1, latch=True)
             
             thread_grp = list()
             if(self.cfg['processVideo']):
@@ -124,12 +125,32 @@ class SoundcamROS(object):
             
             rospy.Subscriber(self.cfg['pose_topic'], Pose, self.subRobotPose)
             
-            srvr = rospy.Service('SoundCameraServiceServer', SoundcamService, self.serviceCB)
+            rospy.Service('SoundCameraServiceServer', SoundcamService, self.serviceCB)
             self.act_srvr = actionlib.SimpleActionServer("SoundCameraActionServer", SoundcamAction, 
                                                       execute_cb=self.executeCB, auto_start=False)
             self.act_feedbk = SoundcamFeedback()
             self.act_result = SoundcamResult()
             self.act_srvr.start()
+
+            #Send camera info
+            msg = CameraInfo()
+            msg.header.stamp = rospy.Time.now()
+            msg.header.frame_id = self.cfg['frame']
+            msg.width = 640
+            msg.height = 480
+            msg.distortion_model = 'plumb_bob'
+            msg.K = [425.0,    0. , 320.0,
+                    0.  , 400.0, 240.0,
+                    0.  ,    0. ,   1. ]
+            msg.D = [0.0, 0.0, 0.0, 0.0]
+            msg.R = [1., 0., 0.,
+                    0., 1., 0.,
+                    0., 0., 1.]
+            msg.P = [1., 0., 0., 0.,
+                    0., 1., 0., 0.,
+                    0., 0., 1., 0.]
+            
+            self.caminfo_pub.publish(msg)
             
             for th in thread_grp:
                 th.start()
