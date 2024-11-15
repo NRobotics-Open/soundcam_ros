@@ -833,8 +833,21 @@ class SoundcamROS(object):
                         self.recordTrigger = True
                         record_start_t = time.time()
                     else: #while recording
+                        # Capture detection values
+                        if((not past_sig_i.detection) and self.signalInfo.detection):
+                            past_sig_i = self.signalInfo
+                        if(self.signalInfo.mean > past_sig_i.mean):
+                            past_sig_i._replace(mean=self.signalInfo.mean, SNR=self.signalInfo.SNR, 
+                                                std_dev=self.signalInfo.std_dev)
+                        if(self.signalInfo.hi_thresh > past_sig_i.hi_thresh):
+                            past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
+                        if((past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < past_sig_i.lo_thresh)):
+                            past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
+
                         if((time.time()-record_start_t) >= recordTime): #save recording
                             rospy.loginfo('SC| Saving recording ...')
+                            if(past_sig_i.mean == 0.0 and past_sig_i.std_dev == 0.0 and past_sig_i.acoustic == 0.0 and past_sig_i.current == 0.0):
+                                past_sig_i = self.signalInfo
                             if(self._saveRecording(auto=True, isActPoint=True, 
                                                 streamType=streamType,
                                                 start_t=record_start_t, 
@@ -842,17 +855,6 @@ class SoundcamROS(object):
                                 cnt += 1
                                 past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
                                 time.sleep(delay)
-                        else: # report progress
-                            # Capture detection values
-                            if((not past_sig_i.detection) and self.signalInfo.detection):
-                                past_sig_i = self.signalInfo
-                            if(self.signalInfo.mean > past_sig_i.mean):
-                                past_sig_i._replace(mean=self.signalInfo.mean, SNR=self.signalInfo.SNR, 
-                                                    std_dev=self.signalInfo.std_dev)
-                            if(self.signalInfo.hi_thresh > past_sig_i.hi_thresh):
-                                past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
-                            if((past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < past_sig_i.lo_thresh)):
-                                past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
                         
                         if(cnt > numCaptures):
                             result = True
@@ -961,13 +963,13 @@ class SoundcamROS(object):
                             if(self.recordTrigger and ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
                                 rospy.loginfo('SC| Saving AUTO recording [Autodetect| Timeout] ...')
                                 self.prepareMissionDirectory()
-                                self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, self.curPreset, past_sig_i))
+                                self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, self.curPreset, 0, past_sig_i))
                                 prevPose = self.curPose
                         
                         if(not self.signalInfo.detection and self.recordTrigger):
                             rospy.loginfo('SC| Saving AUTO recording [Autodetect| Deactivation] ...')
                             self.prepareMissionDirectory()
-                            self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, self.curPreset, past_sig_i))
+                            self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, self.curPreset, 0, past_sig_i))
                             prevPose = self.curPose                  
 
             self.publishDetection(self.signalInfo, self.camera.getBlobData())

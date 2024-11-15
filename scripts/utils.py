@@ -715,7 +715,7 @@ class ROSLayerUtils(object):
     def prepareDirectory(self, id, name, path=None):
         self.missionID = id
         self.missionName = name
-        if((len(path) > 0) and os.path.exists(path)):
+        if((path is not None) and (len(path) > 0) and os.path.exists(path)):
             self.path = path
             self.localId = 1 #reset internal id
         else:
@@ -756,6 +756,7 @@ class ROSLayerUtils(object):
                                                 False, *preset_dt)
             path = self.getPath(fetchMsnDir=useMsnPath)
             loop = str(loop)
+            #print('Current Loop is: ', loop)
             if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
                 with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
                     self.metaData = yaml.safe_load(infofile)
