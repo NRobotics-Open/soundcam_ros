@@ -807,7 +807,7 @@ class SoundcamROS(object):
             #run while loop
             rate = rospy.Rate(15)
             result = False
-            cnt = 0
+            cnt = 1
             past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
             rospy.loginfo('Processing goal ...')
             while(not rospy.is_shutdown()):
@@ -853,15 +853,16 @@ class SoundcamROS(object):
                                 past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
                             if((past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < past_sig_i.lo_thresh)):
                                 past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
-                            
-                            rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
-                            self.act_feedbk.capture_count = cnt
-                            self.act_feedbk.currentTime.data = rospy.Time.now()
-                            self.act_srvr.publish_feedback(self.act_feedbk)
                         
                         if(cnt > numCaptures):
                             result = True
                             break
+                        else:
+                            rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
+                            self.act_feedbk.capture_count = cnt
+                            self.act_feedbk.currentTime.data = rospy.Time.now()
+                            self.act_srvr.publish_feedback(self.act_feedbk)
+
                 else:
                     rospy.logerr('SC| Snapshot nichts zu tun!')
                     result = False
