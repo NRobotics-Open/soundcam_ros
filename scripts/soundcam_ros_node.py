@@ -907,8 +907,8 @@ class SoundcamROS(object):
                         rospy.loginfo('Awaiting Initial Device status ...')
             else:
                 rospy.loginfo('Unable to reach Soundcamera on IP:{0} \n \
-                              Trying again after {1} seconds'.format(self.cfg['ip'], 3))
-                time.sleep(3.0)
+                              Trying again after {1} seconds'.format(self.cfg['ip'], 10))
+                time.sleep(10.0)
                 continue
             rate.sleep()
         return self.camera.isConnected()
