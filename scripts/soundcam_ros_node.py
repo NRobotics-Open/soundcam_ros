@@ -417,16 +417,19 @@ class SoundcamROS(object):
         isActPoint = True
         if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
             frame = self._getFrame(self.camera.getBWVideo)
+            suffix = 'BW'
             if(frame is None):
                 return False
         elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
             frame = self._getFrame(self.camera.getTMVideo)
+            suffix = 'THM'
             if(frame is None):
                 return False
         elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
             p_img_arr1 = self._getFrame(self.camera.getBWVideo)
             p_img_arr2 = self._getFrame(self.camera.getACVideo)
             frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
+            suffix = 'OV'
             if(frame is None):
                 return False
         elif(streamType == SoundcamServiceRequest.ALL):
@@ -460,7 +463,7 @@ class SoundcamROS(object):
         if(streamType != SoundcamServiceRequest.ALL):
             try:
                 if(extras is not None):
-                    filename=self.utils.getUniqueName()
+                    filename=self.utils.getUniqueName(suffix=suffix + '_' + extras[7][0])
                     self.utils.createSnapshotFromFrame(frame, filename=filename)
                     media.append(filename)
                 else:
@@ -476,6 +479,7 @@ class SoundcamROS(object):
                                    preset=extras[4],
                                    loop=extras[5],
                                    sigInfo=extras[6],
+                                   imgIdx=extras[7][1],
                                    useMsnPath=True)):
                 if(self.debug):
                     rospy.logerr_throttle(1, 'SC| Snapshot failure!')
@@ -783,7 +787,7 @@ class SoundcamROS(object):
             self.recordTrigger = False #deactivate record triggers
             #extract parameters
             streamType = SoundcamServiceRequest.ALL
-            tile_no = 0
+            tile_no = true_tile_no = 0
             rospy.loginfo('Extracting goal parameters ...')
             for param in goal.parameters:
                 if(param.key == 'uuid'):
@@ -842,6 +846,7 @@ class SoundcamROS(object):
                     past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
                 if((self.signalInfo.acoustic > past_sig_i.acoustic)):
                     past_sig_i._replace(acoustic=self.signalInfo.acoustic)
+                    true_tile_no = tile_no
                 if(past_sig_i.mean == 0.0 and past_sig_i.std_dev == 0.0 and past_sig_i.acoustic == 0.0 and past_sig_i.current == 0.0):
                     past_sig_i = self.signalInfo
             
@@ -851,7 +856,7 @@ class SoundcamROS(object):
                     #Take Snapshots
                     captureDetections()
                     if(self._takeSnapshot(streamType=streamType, 
-                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.curLoop, past_sig_i))):
+                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.curLoop, past_sig_i, (tile_no, true_tile_no)))):
                         cnt += 1
                         self.act_feedbk.capture_count = cnt
                         self.act_feedbk.currentTime.data = rospy.Time.now()

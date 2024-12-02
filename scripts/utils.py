@@ -693,7 +693,7 @@ class MissionData:
     result_dir: str
 
 class ROSLayerUtils(object):
-    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy acoustic_energy snr detection isSolved \
+    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy acoustic_energy snr detection isSolved relevant_image \
                            presetName maximumFrequency minimumFrequency distance crest dynamic maximum')
     def __init__(self, debug=False) -> None:
         self.mediaDir = os.path.expanduser("~") + '/current'
@@ -740,7 +740,7 @@ class ROSLayerUtils(object):
         else:
             return self.mediaDir
     
-    def addMetaData(self, media, info, id=None, isActionPoint=False, preset=None, loop=1, sigInfo:SignalInfo=None, useMsnPath=False):
+    def addMetaData(self, media, info, id=None, isActionPoint=False, preset=None, loop=1, sigInfo:SignalInfo=None, imgIdx=0, useMsnPath=False):
         try:
             assignedId = self.localId if (id is None) else id
             preset_dt = ('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -753,7 +753,7 @@ class ROSLayerUtils(object):
                                                 float(sigInfo.mean), float(sigInfo.std_dev), 
                                                 float(sigInfo.current), float(sigInfo.acoustic),
                                                 float(sigInfo.SNR), sigInfo.detection,
-                                                False, *preset_dt)
+                                                False, int(imgIdx), *preset_dt)
             path = self.getPath(fetchMsnDir=useMsnPath)
             loop = str(loop)
             #print('Current Loop is: ', loop)
