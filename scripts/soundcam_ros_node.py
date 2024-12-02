@@ -671,6 +671,20 @@ class SoundcamROS(object):
                 resp.results = SoundcamServiceResponse.FAIL
         elif(req.command_type == SoundcamServiceRequest.CMD_TYPE_OP):
             try:
+                # Get Extra Parameters
+                if(len(req.extras) > 0):
+                    for param in req.extras:
+                        if(param.key == 'uuid'):
+                            self.missionData.uuid = param.value
+                        if(param.key == 'missionId'):
+                            self.missionData.id = int(param.value)
+                        if(param.key == 'missionName'):
+                            self.missionData.name = param.value
+                        if(param.key == 'currentLoop'):
+                            self.curLoop = int(param.value)
+                        if(param.key == 'resultDirectory'):
+                            self.missionData.result_dir = param.value
+                
                 if(req.command == SoundcamServiceRequest.RESET_CAMERA):
                     if(not self.camera.restartCamera()):
                         resp.results = SoundcamServiceResponse.FAIL
@@ -769,6 +783,7 @@ class SoundcamROS(object):
             self.recordTrigger = False #deactivate record triggers
             #extract parameters
             streamType = SoundcamServiceRequest.ALL
+            tile_no = 0
             rospy.loginfo('Extracting goal parameters ...')
             for param in goal.parameters:
                 if(param.key == 'uuid'):
@@ -800,6 +815,8 @@ class SoundcamROS(object):
                     wpTheta = float(param.value)
                 if(param.key == 'resultDirectory'):
                     self.missionData.result_dir = param.value
+                if(param.key == 'imageTileNo'): #default = 0
+                    tile_no = param.value
             
             #prepare directory
             self.prepareMissionDirectory()
@@ -808,13 +825,33 @@ class SoundcamROS(object):
             rate = rospy.Rate(15)
             result = False
             cnt = 1
-            past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+
+            if(tile_no <= 1):
+                past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+
+            def captureDetections():
+                # Capture detection values
+                if((not past_sig_i.detection) and self.signalInfo.detection):
+                    past_sig_i = self.signalInfo
+                if(self.signalInfo.mean > past_sig_i.mean):
+                    past_sig_i._replace(mean=self.signalInfo.mean, SNR=self.signalInfo.SNR, 
+                                        std_dev=self.signalInfo.std_dev)
+                if(self.signalInfo.hi_thresh > past_sig_i.hi_thresh):
+                    past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
+                if((past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < past_sig_i.lo_thresh)):
+                    past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
+                if((self.signalInfo.acoustic > past_sig_i.acoustic)):
+                    past_sig_i._replace(acoustic=self.signalInfo.acoustic)
+                if(past_sig_i.mean == 0.0 and past_sig_i.std_dev == 0.0 and past_sig_i.acoustic == 0.0 and past_sig_i.current == 0.0):
+                    past_sig_i = self.signalInfo
+            
             rospy.loginfo('Processing goal ...')
             while(not rospy.is_shutdown()):
                 if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
                     #Take Snapshots
+                    captureDetections()
                     if(self._takeSnapshot(streamType=streamType, 
-                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.curLoop, self.signalInfo))):
+                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.curLoop, past_sig_i))):
                         cnt += 1
                         self.act_feedbk.capture_count = cnt
                         self.act_feedbk.currentTime.data = rospy.Time.now()
@@ -833,17 +870,7 @@ class SoundcamROS(object):
                         self.recordTrigger = True
                         record_start_t = time.time()
                     else: #while recording
-                        # Capture detection values
-                        if((not past_sig_i.detection) and self.signalInfo.detection):
-                            past_sig_i = self.signalInfo
-                        if(self.signalInfo.mean > past_sig_i.mean):
-                            past_sig_i._replace(mean=self.signalInfo.mean, SNR=self.signalInfo.SNR, 
-                                                std_dev=self.signalInfo.std_dev)
-                        if(self.signalInfo.hi_thresh > past_sig_i.hi_thresh):
-                            past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
-                        if((past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < past_sig_i.lo_thresh)):
-                            past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
-
+                        captureDetections()
                         if((time.time()-record_start_t) >= recordTime): #save recording
                             rospy.loginfo('SC| Saving recording ...')
                             if(past_sig_i.mean == 0.0 and past_sig_i.std_dev == 0.0 and past_sig_i.acoustic == 0.0 and past_sig_i.current == 0.0):
