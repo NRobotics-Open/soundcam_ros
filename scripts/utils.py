@@ -745,15 +745,20 @@ class ROSLayerUtils(object):
             assignedId = self.localId if (id is None) else id
             preset_dt = ('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             if(preset is not None):
+                leakage_rate = ((abs(sigInfo.acoustic - sigInfo.mean) - 1.8) * 2.5)
+                if (leakage_rate > 50.0):
+                    leakage_rate = 49.99
+                if ((sigInfo.acoustic <= 1.0) or (leakage_rate < 0.0)):
+                    leakage_rate = 0.0
                 preset_dt = (preset.presetName, preset.maxFrequency, preset.minFrequency,
                              preset.distance, preset.crest, preset.dynamic, preset.maximum)
             obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
                                                 float(info[0]), float(info[1]), float(info[2]), 
                                                 media,
-                                                float(sigInfo.mean), float(sigInfo.std_dev), 
+                                                float(leakage_rate), float(sigInfo.std_dev), 
                                                 float(sigInfo.current), float(sigInfo.acoustic),
                                                 float(sigInfo.SNR), sigInfo.detection,
-                                                False, int(imgIdx), *preset_dt)
+                                                False, int(imgIdx), *preset_dt) #float(sigInfo.mean), float(sigInfo.std_dev),
             path = self.getPath(fetchMsnDir=useMsnPath)
             loop = str(loop)
             #print('Current Loop is: ', loop)
