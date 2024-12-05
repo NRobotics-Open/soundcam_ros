@@ -791,6 +791,14 @@ class ROSLayerUtils(object):
                         hasId = True
                         for dt in obj.media:
                             obj_old['media'].append(dt)
+                        # update signal Parameters
+                        obj_old['acoustic_energy'] = obj.acoustic_energy
+                        obj_old['current_energy'] = obj.current_energy
+                        obj_old['detection'] = obj.detection
+                        obj_old['mean_energy'] = obj.mean_energy
+                        obj_old['relevant_image'] = obj.relevant_image
+                        obj_old['snr'] = obj.snr
+                        obj_old['std_dev'] = obj.std_dev
                         break
                 if(not hasId):
                     self.metaData[loop]['datapoints'].append(obj._asdict())

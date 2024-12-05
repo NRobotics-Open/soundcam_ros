@@ -462,26 +462,29 @@ class SoundcamROS(object):
                     if(self.frame is None):
                         return False
                 elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
-                    p_img_arr1 = self._getFrame(self.camera.getBWVideo)
-                    p_img_arr2 = self._getFrame(self.camera.getACVideo)
-                    cnt = 1
+                    self.frame = self.frame_overlay
+                    self.suffix = 'OV'
 
-                    while(p_img_arr2 is None):
-                        p_img_arr2 = self._getFrame(self.camera.getACVideo)
-                        time.sleep(0.1)
-                        cnt += 1
-                        if(cnt > 4):
-                            rospy.logwarn('No Acoustic frame found!')
-                            break
-                    if((p_img_arr1 is not None)):
-                        self.frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
-                        self.suffix = 'OV'
+                    # p_img_arr1 = self._getFrame(self.camera.getBWVideo)
+                    # p_img_arr2 = self._getFrame(self.camera.getACVideo)
+                    # cnt = 1
+
+                    # while(p_img_arr2 is None):
+                    #     p_img_arr2 = self._getFrame(self.camera.getACVideo)
+                    #     time.sleep(0.1)
+                    #     cnt += 1
+                    #     if(cnt > 4):
+                    #         rospy.logwarn('No Acoustic frame found!')
+                    #         break
+                    # if((p_img_arr1 is not None)):
+                    #     self.frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
+                    #     self.suffix = 'OV'
                 
                 if((self.frame is not None) or ((time.time() - start_t) >= elapsed)):
                     break
                 time.sleep(0.1)
             if(self.frame is None):
-                rospy.logerr('SC| Error getting frame, will use copy frame')
+                #rospy.logerr('SC| Error getting frame, will use copy frame')
                 self.frame = self.frame_overlay
 
             try:
