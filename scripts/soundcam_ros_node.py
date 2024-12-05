@@ -486,7 +486,6 @@ class SoundcamROS(object):
             if(self.frame is None):
                 #rospy.logerr('SC| Error getting frame, will use copy frame')
                 self.frame = self.frame_overlay
-
             try:
                 if(extras is not None):
                     sfx = ''.join([self.suffix, '_', str(extras[7][0])])
@@ -500,6 +499,7 @@ class SoundcamROS(object):
                 return False
         
         if((extras is not None) and (len(media) > 0)):
+            print('Tile data: ', extras[7])
             if(not self.utils.addMetaData(media=media,isActionPoint=isActPoint, 
                                    id=extras[0], 
                                    info=(extras[1:4]), 
@@ -802,6 +802,9 @@ class SoundcamROS(object):
         if((not self.past_sig_i.detection) and self.signalInfo.detection):
             self.past_sig_i = self.signalInfo
             print('Detection!')
+        if(self.past_sig_i.current < self.signalInfo.current):
+            self.past_sig_i._replace(current=self.signalInfo.current)
+            print('Updated current!')
         if(self.signalInfo.mean > self.past_sig_i.mean):
             self.past_sig_i._replace(mean=self.signalInfo.mean, SNR=self.signalInfo.SNR, 
                                 std_dev=self.signalInfo.std_dev)
