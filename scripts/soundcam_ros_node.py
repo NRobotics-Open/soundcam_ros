@@ -417,42 +417,42 @@ class SoundcamROS(object):
     def _takeSnapshot(self, streamType=SoundcamServiceRequest.OVERLAY_STREAM, extras=None):
         isActPoint = True
         if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
-            frame = self._getFrame(self.camera.getBWVideo)
-            suffix = 'BW'
-            if(frame is None):
+            self.frame = self._getFrame(self.camera.getBWVideo)
+            self.suffix = 'BW'
+            if(self.frame is None):
                 return False
         elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
-            frame = self._getFrame(self.camera.getTMVideo)
-            suffix = 'THM'
-            if(frame is None):
+            self.frame = self._getFrame(self.camera.getTMVideo)
+            self.suffix = 'THM'
+            if(self.frame is None):
                 return False
         elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
             p_img_arr1 = self._getFrame(self.camera.getBWVideo)
             p_img_arr2 = self._getFrame(self.camera.getACVideo)
-            frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
-            suffix = 'OV'
-            if(frame is None):
+            self.frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
+            self.suffix = 'OV'
+            if(self.frame is None):
                 return False
         elif(streamType == SoundcamServiceRequest.ALL):
             try:
                 media = list()
                 frame_data = list()
                 filename = self.utils.getUniqueName(suffix='BW')
-                frame = self._getFrame(self.camera.getBWVideo)
-                if(frame is not None):
-                    frame_data.append((frame, filename))
+                self.frame = self._getFrame(self.camera.getBWVideo)
+                if(self.frame is not None):
+                    frame_data.append((self.frame, filename))
 
                 filename = self.utils.getUniqueName(suffix='THM')
-                frame = self._getFrame(self.camera.getTMVideo)
-                if(frame is not None):
-                    frame_data.append((frame, filename))
+                self.frame = self._getFrame(self.camera.getTMVideo)
+                if(self.frame is not None):
+                    frame_data.append((self.frame, filename))
 
                 filename = self.utils.getUniqueName(suffix='OV')
                 p_img_arr1 = self._getFrame(self.camera.getBWVideo)
                 p_img_arr2 = self._getFrame(self.camera.getACVideo)
-                frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
-                if(frame is not None):
-                    frame_data.append((frame, filename))
+                self.frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
+                if(self.frame is not None):
+                    frame_data.append((self.frame, filename))
                 
                 for fobj in frame_data: #write snapshots
                     self.utils.createSnapshotFromFrame(fobj[0], filename=fobj[1])
@@ -464,11 +464,11 @@ class SoundcamROS(object):
         if(streamType != SoundcamServiceRequest.ALL):
             try:
                 if(extras is not None):
-                    filename=self.utils.getUniqueName(suffix=suffix + '_' + extras[7][0])
-                    self.utils.createSnapshotFromFrame(frame, filename=filename)
+                    filename=self.utils.getUniqueName(suffix=self.suffix + '_' + str(extras[7][0]))
+                    self.utils.createSnapshotFromFrame(self.frame, filename=filename)
                     media.append(filename)
                 else:
-                    self.utils.createSnapshotFromFrame(frame)
+                    self.utils.createSnapshotFromFrame(self.frame)
             except Exception as e:
                 rospy.logerr('SC| Error taking BW/THM/OV snapshot: ', e)
                 return False
