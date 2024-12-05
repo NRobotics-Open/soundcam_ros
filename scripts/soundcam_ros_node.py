@@ -790,6 +790,31 @@ class SoundcamROS(object):
                 rospy.loginfo('UUID - %s' % self.missionData.uuid)
                 rospy.loginfo('Newly created path is: %s' % self.utils.getPath(fetchMsnDir=True))
 
+    def captureDetections(self):
+        # Capture detection values
+        if(self.past_sig_i.mean == 0.0 and self.past_sig_i.std_dev == 0.0 and self.past_sig_i.acoustic == 0.0 and self.past_sig_i.current == 0.0):
+            self.past_sig_i = self.signalInfo
+            print('Setting past signal for the first time!')
+        
+        if((not self.past_sig_i.detection) and self.signalInfo.detection):
+            self.past_sig_i = self.signalInfo
+            print('Detection!')
+        if(self.signalInfo.mean > self.past_sig_i.mean):
+            self.past_sig_i._replace(mean=self.signalInfo.mean, SNR=self.signalInfo.SNR, 
+                                std_dev=self.signalInfo.std_dev)
+            print('Mean updated!')
+        if(self.signalInfo.hi_thresh > self.past_sig_i.hi_thresh):
+            self.past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
+            print('Hi Thresh updated!')
+        if((self.past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < self.past_sig_i.lo_thresh)):
+            self.past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
+            print('Low Thresh updated!')
+        if((self.signalInfo.acoustic > self.past_sig_i.acoustic)):
+            self.past_sig_i._replace(acoustic=self.signalInfo.acoustic)
+            print('High acoustic detected!')
+            return True
+        return False
+
     from diagnostic_msgs.msg import KeyValue
     def executeCB(self, goal: SoundcamGoal):
         rospy.loginfo('SC| Received goal!')
@@ -811,7 +836,8 @@ class SoundcamROS(object):
             self.recordTrigger = False #deactivate record triggers
             #extract parameters
             streamType = SoundcamServiceRequest.ALL
-            tile_no = self.true_tile_no = 0
+            tile_no = 0
+            t_tile_no = 0 #Relevant tile
             rospy.loginfo('Extracting goal parameters ...')
             for param in goal.parameters:
                 if(param.key == 'uuid'):
@@ -856,31 +882,19 @@ class SoundcamROS(object):
 
             if(tile_no <= 1):
                 self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
-
-            def captureDetections():
-                # Capture detection values
-                if((not self.past_sig_i.detection) and self.signalInfo.detection):
-                    self.past_sig_i = self.signalInfo
-                if(self.signalInfo.mean > self.past_sig_i.mean):
-                    self.past_sig_i._replace(mean=self.signalInfo.mean, SNR=self.signalInfo.SNR, 
-                                        std_dev=self.signalInfo.std_dev)
-                if(self.signalInfo.hi_thresh > self.past_sig_i.hi_thresh):
-                    self.past_sig_i._replace(hi_thresh=self.signalInfo.hi_thresh)
-                if((self.past_sig_i.lo_thresh > 0.0) and (self.signalInfo.lo_thresh < self.past_sig_i.lo_thresh)):
-                    self.past_sig_i._replace(lo_thresh=self.signalInfo.lo_thresh)
-                if((self.signalInfo.acoustic > self.past_sig_i.acoustic)):
-                    self.past_sig_i._replace(acoustic=self.signalInfo.acoustic)
-                    self.true_tile_no = tile_no
-                if(self.past_sig_i.mean == 0.0 and self.past_sig_i.std_dev == 0.0 and self.past_sig_i.acoustic == 0.0 and self.past_sig_i.current == 0.0):
-                    self.past_sig_i = self.signalInfo
             
             rospy.loginfo('Processing goal ...')
             while(not rospy.is_shutdown()):
                 if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
                     #Take Snapshots
-                    captureDetections()
+                    print("Running signalDetection: ", self.signalInfo)
+                    print("Past Signal Detection: ", self.past_sig_i)
+                    if(self.captureDetections()):
+                        t_tile_no = tile_no
+                        print('Relevant Tile is: ', t_tile_no)
+                    
                     if(self._takeSnapshot(streamType=streamType, 
-                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.curLoop, self.past_sig_i, (tile_no, self.true_tile_no)))):
+                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.curLoop, self.past_sig_i, (tile_no, t_tile_no)))):
                         cnt += 1
                         self.act_feedbk.capture_count = cnt
                         self.act_feedbk.currentTime.data = rospy.Time.now()
@@ -899,7 +913,7 @@ class SoundcamROS(object):
                         self.recordTrigger = True
                         record_start_t = time.time()
                     else: #while recording
-                        captureDetections()
+                        self.captureDetections()
                         if((time.time()-record_start_t) >= recordTime): #save recording
                             rospy.loginfo('SC| Saving recording ...')
                             if(self.past_sig_i.mean == 0.0 and self.past_sig_i.std_dev == 0.0 and self.past_sig_i.acoustic == 0.0 and self.past_sig_i.current == 0.0):
