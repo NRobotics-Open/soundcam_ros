@@ -446,23 +446,32 @@ class SoundcamROS(object):
         else: # selective image save
             self.suffix = ''
             self.frame = None
-            if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
-                self.frame = self._getFrame(self.camera.getBWVideo)
-                self.suffix = 'BW'
-                if(self.frame is None):
-                    return False
-            elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
-                self.frame = self._getFrame(self.camera.getTMVideo)
-                self.suffix = 'THM'
-                if(self.frame is None):
-                    return False
-            elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
-                p_img_arr1 = self._getFrame(self.camera.getBWVideo)
-                p_img_arr2 = self._getFrame(self.camera.getACVideo)
-                self.frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
-                self.suffix = 'OV'
-                if(self.frame is None):
-                    return False
+            start_t = time.time()
+            elapsed = 10.0
+            while(True):
+                if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
+                    self.frame = self._getFrame(self.camera.getBWVideo)
+                    self.suffix = 'BW'
+                    if(self.frame is None):
+                        return False
+                elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
+                    self.frame = self._getFrame(self.camera.getTMVideo)
+                    self.suffix = 'THM'
+                    if(self.frame is None):
+                        return False
+                elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
+                    p_img_arr1 = self._getFrame(self.camera.getBWVideo)
+                    p_img_arr2 = self._getFrame(self.camera.getACVideo)
+                    if((p_img_arr1 is not None) and (p_img_arr2 is not None)):
+                        self.frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
+                        self.suffix = 'OV'
+                
+                if((self.frame is not None) or ((time.time() - start_t) >= elapsed)):
+                    break
+                time.sleep(0.1)
+            if(self.frame is None):
+                rospy.logerr('SC| Error getting frame: ', e)
+                return False
             try:
                 if(extras is not None):
                     sfx = ''.join([self.suffix, '_', str(extras[7][0])])

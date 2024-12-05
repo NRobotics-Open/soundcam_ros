@@ -851,13 +851,18 @@ class ROSLayerUtils(object):
             frame_list.pop(0)  # Remove the oldest frame
     
     def createSnapshotFromFrame(self, frame, filename=None):
+        if(frame is None):
+            return
         if(filename is None):
             save_to = os.path.join(self.mediaDir, self.curImg)
         else:
             save_to = os.path.join(self.getPath(fetchMsnDir=True), filename)
         if(self.debug):
             print('Saving snaphsot to: ', save_to)
-        cv2.imwrite(save_to, frame)
+        try:
+            cv2.imwrite(save_to, frame)
+        except Exception as e:
+            print('SC| Error creating snapshot: ', e)
     
     def createVideoFromFrames(self, frame_list:list, filename=None, fps=10):
         if not frame_list:
