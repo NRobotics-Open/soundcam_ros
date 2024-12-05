@@ -68,6 +68,7 @@ class SoundcamROS(object):
         self.curLoop = 1
         self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.frame_overlay = None
 
     def bringUpInterfaces(self):
         rospy.loginfo('Bringing up interfaces ...')
@@ -252,6 +253,7 @@ class SoundcamROS(object):
                 if((p_img_arr1 is not None) and (p_img_arr2 is not None)):
                     #Post process
                     img_arr = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
+                    self.frame_overlay = img_arr #always store a copy
                     # MANUAL stream recording
                     if(self.manualTrigger and (self.streamType == streamType)):
                         self._manual_frames_ls.append(img_arr)
@@ -479,8 +481,9 @@ class SoundcamROS(object):
                     break
                 time.sleep(0.1)
             if(self.frame is None):
-                rospy.logerr('SC| Error getting frame: ', e)
-                return False
+                rospy.logerr('SC| Error getting frame, will use copy frame')
+                self.frame = self.frame_overlay
+
             try:
                 if(extras is not None):
                     sfx = ''.join([self.suffix, '_', str(extras[7][0])])
