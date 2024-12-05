@@ -745,10 +745,13 @@ class ROSLayerUtils(object):
             assignedId = self.localId if (id is None) else id
             preset_dt = ('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             if(preset is not None):
-                leakage_rate = ((abs(sigInfo.acoustic - sigInfo.mean) - 1.8) * 2.5)
-                if (leakage_rate > 50.0):
-                    leakage_rate = 49.99
-                if ((sigInfo.acoustic <= 1.0) or (leakage_rate < 0.0)):
+                if(sigInfo is not None):
+                    leakage_rate = ((abs(sigInfo.acoustic - sigInfo.mean) - 1.8) * 2.5)
+                    if (leakage_rate > 50.0):
+                        leakage_rate = 49.99
+                    if ((sigInfo.acoustic <= 1.0) or (leakage_rate < 0.0)):
+                        leakage_rate = 0.0
+                else:
                     leakage_rate = 0.0
                 preset_dt = (preset.presetName, preset.maxFrequency, preset.minFrequency,
                              preset.distance, preset.crest, preset.dynamic, preset.maximum)
