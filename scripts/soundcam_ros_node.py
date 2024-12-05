@@ -462,7 +462,16 @@ class SoundcamROS(object):
                 elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
                     p_img_arr1 = self._getFrame(self.camera.getBWVideo)
                     p_img_arr2 = self._getFrame(self.camera.getACVideo)
-                    if((p_img_arr1 is not None) and (p_img_arr2 is not None)):
+                    cnt = 1
+
+                    while(p_img_arr2 is None):
+                        p_img_arr2 = self._getFrame(self.camera.getACVideo)
+                        time.sleep(0.1)
+                        cnt += 1
+                        if(cnt > 4):
+                            rospy.logwarn('No Acoustic frame found!')
+                            break
+                    if((p_img_arr1 is not None)):
                         self.frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
                         self.suffix = 'OV'
                 
