@@ -450,39 +450,45 @@ class SoundcamROS(object):
             self.frame = None
             start_t = time.time()
             elapsed = 10.0
-            while(True):
-                if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
-                    self.frame = self._getFrame(self.camera.getBWVideo)
-                    self.suffix = 'BW'
-                    if(self.frame is None):
-                        return False
-                elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
-                    self.frame = self._getFrame(self.camera.getTMVideo)
-                    self.suffix = 'THM'
-                    if(self.frame is None):
-                        return False
-                elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
-                    self.frame = self.frame_overlay
-                    self.suffix = 'OV'
-
-                    # p_img_arr1 = self._getFrame(self.camera.getBWVideo)
-                    # p_img_arr2 = self._getFrame(self.camera.getACVideo)
-                    # cnt = 1
-
-                    # while(p_img_arr2 is None):
-                    #     p_img_arr2 = self._getFrame(self.camera.getACVideo)
-                    #     time.sleep(0.1)
-                    #     cnt += 1
-                    #     if(cnt > 4):
-                    #         rospy.logwarn('No Acoustic frame found!')
-                    #         break
-                    # if((p_img_arr1 is not None)):
-                    #     self.frame = self.utils.imageOverlay(p_img_arr1, p_img_arr2)
-                    #     self.suffix = 'OV'
-                
-                if((self.frame is not None) or ((time.time() - start_t) >= elapsed)):
-                    break
-                time.sleep(0.1)
+            if (isinstance(streamType, list)):
+                for stream in streamType:
+                    while(True):
+                        if(stream == SoundcamServiceRequest.VIDEO_STREAM):
+                            self.frame = self._getFrame(self.camera.getBWVideo)
+                            self.suffix = 'BW'
+                            if(self.frame is None):
+                                return False
+                        elif(stream == SoundcamServiceRequest.THERMAL_STREAM):
+                            self.frame = self._getFrame(self.camera.getTMVideo)
+                            self.suffix = 'THM'
+                            if(self.frame is None):
+                                return False
+                        elif(stream == SoundcamServiceRequest.OVERLAY_STREAM):
+                            self.frame = self.frame_overlay
+                            self.suffix = 'OV'
+                        
+                        if((self.frame is not None) or ((time.time() - start_t) >= elapsed)):
+                            break
+                        time.sleep(0.1)
+            else:
+                while(True):
+                    if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
+                        self.frame = self._getFrame(self.camera.getBWVideo)
+                        self.suffix = 'BW'
+                        if(self.frame is None):
+                            return False
+                    elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
+                        self.frame = self._getFrame(self.camera.getTMVideo)
+                        self.suffix = 'THM'
+                        if(self.frame is None):
+                            return False
+                    elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
+                        self.frame = self.frame_overlay
+                        self.suffix = 'OV'
+                    
+                    if((self.frame is not None) or ((time.time() - start_t) >= elapsed)):
+                        break
+                    time.sleep(0.1)
             if(self.frame is None):
                 #rospy.logerr('SC| Error getting frame, will use copy frame')
                 self.frame = self.frame_overlay
@@ -796,7 +802,7 @@ class SoundcamROS(object):
     def captureDetections(self):
         # Capture detection values
         if(self.past_sig_i.mean == 0.0 and self.past_sig_i.std_dev == 0.0 and self.past_sig_i.acoustic == 0.0 and self.past_sig_i.current == 0.0):
-            self.past_sig_i = self.signalInfo
+            self.past_sig_i = SignalInfo(**self.signalInfo._asdict())
             print('Setting past signal for the first time!')
         
         if((not self.past_sig_i.detection) and self.signalInfo.detection):
@@ -843,7 +849,6 @@ class SoundcamROS(object):
             #extract parameters
             streamType = SoundcamServiceRequest.ALL
             tile_no = 0
-            t_tile_no = 0 #Relevant tile
             rospy.loginfo('Extracting goal parameters ...')
             for param in goal.parameters:
                 if(param.key == 'uuid'):
@@ -890,17 +895,23 @@ class SoundcamROS(object):
                 self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
             
             rospy.loginfo('Processing goal ...')
+            rel_tile_num = 0 #Relevant tile
             while(not rospy.is_shutdown()):
                 if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
                     #Take Snapshots
                     print("Running signalDetection: ", self.signalInfo)
                     print("Past Signal Detection: ", self.past_sig_i)
                     if(self.captureDetections()):
-                        t_tile_no = tile_no
-                        print('Relevant Tile is: ', t_tile_no)
+                        print('Setting Relevant tile no. ')
+                        rel_tile_num = tile_no
+                        print('Relevant Tile is: ', rel_tile_num)
+                    if((self.signalInfo.acoustic > self.past_sig_i.acoustic)):
+                        self.past_sig_i._replace(acoustic=self.signalInfo.acoustic)
+                        print('High acoustic detected2!')
+                        rel_tile_num = tile_no
                     
                     if(self._takeSnapshot(streamType=streamType, 
-                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.curLoop, self.past_sig_i, (tile_no, t_tile_no)))):
+                                    extras=(wpId, wpX, wpY, wpTheta , self.curPreset, self.curLoop, self.past_sig_i, (tile_no, rel_tile_num)))):
                         cnt += 1
                         self.act_feedbk.capture_count = cnt
                         self.act_feedbk.currentTime.data = rospy.Time.now()
