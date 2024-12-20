@@ -1,6 +1,9 @@
 #Camera parameters
 ip: '192.168.3.101'
-port: 6340
+broadcast_ip: '192.168.3.255'
+tcp_port: 6340
+udp_port: 51914
+udp_receive_port: 51915
 protocol: 3
 driver_debug: False
 system_run: False #if False: turns off all visualizations & uses ROS publishers
@@ -17,7 +20,8 @@ acimageFPS: 80 #fps
 acAvg: 0 #0 - fast 1 - slow 2 - impulse
 deviceState: 5 #0-Idle 1-Measuring 2-Streaming 3-Service_1 4-Ultrasonic 5-Ultrasonic+
 dataToSend1: 79 #11000010 #(79) - 11110010 (75) (data) -> AcVid, Vid, ThermalVid, LocalSound, MicLevels, MicRaw, Spectra, SingleMic
-dataToSend2: 1 #1000000 (filters) -> LocalSound, LevelFiltered, RawDataFiltered, IRGain
+dataToSend2: 0 #1000000 (new updates) -> LeakRate, Reserved [1..7]
+dataToSend3: 1 #1000000 (filters) -> LocalSound, LevelFiltered, RawDataFiltered, IRGain
 heartbeatRate: 300 #Hz - Not used
 cameraLighting: 0 #0-off 1-on
 videoFPS: 30 #fps
