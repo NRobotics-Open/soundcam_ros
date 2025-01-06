@@ -12,7 +12,7 @@ NFFT = 4096
 NOVERLAP = 128
 
 SignalInfo = namedtuple('SignalInfo', 
-                        'mean std_dev hi_thresh current lo_thresh snr pre_activation, detection')
+                        'mean std_dev hi_thresh current lo_thresh acoustic SNR pre_activation detection')
 
 class SoundUtils():
     class BufferTypes(Enum):
@@ -31,8 +31,9 @@ class SoundUtils():
     def __init__(self, window=500, detectionWin=50, t=10, 
                  minFreq=0, maxFreq=1e5, acFreq=50, specFreq=11,
                  scalingMode:ScalingMode=ScalingMode.OFF, 
-                 dynamic_thresh_f=8,
-                 low_thresh_f=1.5,
+                 hi_thresh_f=1,
+                 low_thresh_f=0.5,
+                 trigger_thresh=3,
                  smoothing_win=5,
                  trigger_duration=2.0, debug=False) -> None:
         self.debug = debug
@@ -73,15 +74,17 @@ class SoundUtils():
         - Hysteresis
         - Temporal Consistency
         '''
-        self.dyn_threshold_factor = dynamic_thresh_f #1.5 Multiplier for dynamic threshold
+        self.hi_threshold_factor = hi_thresh_f #1.5 Multiplier for dynamic threshold
         self.low_threshold_factor = low_thresh_f # Lower threshold for hysteresis
         self.previous_detection = False
         self.pre_activation = False
         self.smoothing_window = smoothing_win  # Sliding window size for energy smoothing
         self.trigger_time = time.time()
         self.trigger_duration = trigger_duration #seconds
+        self.trigger_thresh = trigger_thresh
         self.energy_sz = 1023 - self.smoothing_window + 1
-        self.sig_data:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.energy_skip = self.smoothing_window * self.energy_sz
+        self.sig_data:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.isReady = False
 
     '''
@@ -131,6 +134,7 @@ class SoundUtils():
             self.specGlobalBuffer = sa.attach("shm://" + self.shmnames[self.BufferTypes.GLOBAL_SPECTRUM.value])
             self.specLocalBuffer = sa.attach("shm://" + self.shmnames[self.BufferTypes.LOCAL_SPECTRUM.value])
             self.energyBuffer = sa.attach("shm://" + self.shmnames[self.BufferTypes.ENERGY.value])
+            self.noiseBuffer = np.zeros((self.p_getSpecLen(), 1))
             self.frequencies = np.fft.rfftfreq(n=2048, d=1/200000)[2:]
             self.isSpectrumBufferInit = True
             print('Spectrum Ringbuffers ready!')
@@ -174,7 +178,7 @@ class SoundUtils():
         self.cnt += 1
         if(self.cnt > self.window):
             self.cnt = self.window
-        if(self.cnt > self.detectionWindow * 2):
+        if(self.cnt > self.detectionWindow * 1):
             self.isReady = True
     
     def getSpectrumBuffer(self, global_data=True):
@@ -268,66 +272,113 @@ class SoundUtils():
     
     def computeEnergy(self, uselocal=True, getArray=True) -> (float):
         windowToUse = self.detectionWindow if(self.cnt >= self.detectionWindow) else self.cnt
-        if (uselocal):
-            arr = self.specLocalBuffer[-windowToUse:, :]
-        else:
-            arr = self.specGlobalBuffer[-windowToUse:, :]
+        #if (uselocal):
+        filt_arr = self.specLocalBuffer[-windowToUse:, :]
+        #else:
+        unfilt_arr = self.specGlobalBuffer[-windowToUse:, :]
         # Initialize energies to zero
         energies = np.zeros(1023, dtype=np.float32)
+        noise = np.zeros(1023, dtype=np.float32)
         # Compute the energy for each time sample
-        for s in range(arr.shape[0]):  # iterate over each time sample
-            bin = arr[s, :]  # Get the frequency bin for the current time sample (shape: 1023,)
+        for s in range(filt_arr.shape[0]):  # iterate over each time sample
+            filt_bin = filt_arr[s, :]  # Get the frequency bin for the current time sample (shape: 1023,)
+            unfilt_bin = unfilt_arr[s, :]
             #print('Bin contains: ', bin)
             # Iterate over each frequency and apply the frequency mask
             for i, freq in enumerate(self.frequencies):
                 if self.minFreq <= freq <= self.maxFreq:  # Only consider frequencies within the specified range
-                    energies[i] = self.dbsum([energies[i], bin[i]])
-                    #print('Processing Bin element at: ', i, ' with val: ', bin[i])
+                    energies[i] = self.dbsum([energies[i], filt_bin[i]])
+                else:
+                    noise[i] = self.dbsum([noise[i], unfilt_bin[i]])
             #print('Bin at ',s, ' Energy: ', np.sum(energies))
         # Shift the energy buffer in-place (without np.roll) 
         self.energyBuffer[:-self.energy_sz, :] = self.energyBuffer[self.energy_sz:, :]
         energies = energies.reshape(-1, 1)
-        #print("Current Energy: ", self.dbmean(energies))
         self.energyBuffer[-self.energy_sz:, :] = self.smoothEnergy(energies).reshape(-1,1)
+        
+        self.noiseBuffer[:-self.energy_sz, :] = self.noiseBuffer[self.energy_sz:, :]
+        noise = noise.reshape(-1, 1)
+        self.noiseBuffer[-self.energy_sz:, :] = self.smoothEnergy(noise).reshape(-1,1)
         if(self.isReady):
-            self.sig_data = self._detectEvent(self.energyBuffer)
+            self.sig_data = self._detectEvent(self.energyBuffer, self.noiseBuffer)
     
     def smoothEnergy(self, energies): # Simple moving average for smoothing returns array of shape (1019,)
         return np.convolve(np.ravel(energies), np.ones(self.smoothing_window)/self.smoothing_window, mode='valid')
     
+    
+    '''
+        Compute the dynamic thresholds w SNR 
+    '''
     def dynamicThreshold(self, mean_energy, std_energy, snr):
         # Dynamic threshold calculation based on mean + k * std
-        ajusted_factor = self.dyn_threshold_factor/ (1 + (snr))
-        return mean_energy + ajusted_factor * std_energy
+        ajusted_factor = self.hi_threshold_factor/ (1 + (snr))
+        return (mean_energy + (ajusted_factor * std_energy), 
+                self.low_threshold_factor * std_energy)
     
-    def _detectEvent(self, energies):
+    '''
+        Compute the dynamic thresholds w/o SNR 
+    '''
+    def dynamicThreshold2(self, mean_energy, std_energy, snr, use_snr=False):
+        # Dynamic high threshold calculation based on mean + k * std 
+        # Dynamic low threshold calculation based on mean + h * std 
+        # where k > h
+        if(use_snr):
+            if(math.isnan(snr)):
+                snr = 0.0
+            adj_hi = self.hi_threshold_factor/ (1 + (snr))
+            adj_lo = self.low_threshold_factor/ (1 + (snr))
+            return (mean_energy + (adj_hi * std_energy), 
+                mean_energy + (adj_lo * std_energy))
+        return (mean_energy + (self.hi_threshold_factor * std_energy), 
+                mean_energy + (self.low_threshold_factor * std_energy))
+    
+    def _detectEvent(self, energies, noise):
         # Step 2: Smooth the energy using a sliding window
         #smoothed_energies = self.smoothEnergy(energies)
         #print("Smoothed Energies | ", smoothed_energies)
-         # Step 3: Compute mean and standard deviation of the smoothed energy for dynamic thresholding
-        mean_energy = np.mean(energies)
-        std_energy = np.std(energies)
+        # Step 3: Compute mean and standard deviation of the smoothed energy for dynamic thresholding
+         # What if I preclude the amount of input signals I am using for smoothing when calculating the mean and std_dev
+        mean_energy = np.nanmean(energies)
+        std_energy = np.nanstd(energies)
+        #mean_energy = np.mean(energies[: -self.energy_skip])
+        #std_energy = np.std(energies[: -self.energy_skip])
         # Step 4: Detect if current energy exceeds the high threshold (new detection) or is below the low threshold (end of detection)
-        current_energy = np.mean(np.trim_zeros(energies[-self.energy_sz:]))  # Most recent energy value
-        
+        current_energy = np.nanmean(np.trim_zeros(energies[-self.energy_sz:]))  # Most recent energy value
         # Step 5: Compute SNR 
-        noise_energy = np.mean(energies[:-self.energy_sz])
-        if(noise_energy == 0):
-            noise_energy = np.inf
-        snr = current_energy/ noise_energy
+        # noise_energy = np.mean(energies[:-self.energy_sz])
+        # #noise_energy = np.mean(energies[:-self.energy_skip]) #don't use the x-recent signals in the calculation
+        # if(noise_energy == 0):
+        #     noise_energy = np.inf
+        # snr = current_energy/ noise_energy
+        # SNR compute with acoustic data
+        # ac_avg = np.nanmean(self.acousticBuffer[:-3072])
+        # if((ac_avg == 0) or math.isnan(ac_avg)):
+        #     ac_avg = np.inf
+        # ac_snr = np.nanmean(self.acousticBuffer[-3072:])/ ac_avg
+        # if(math.isnan(ac_snr)):
+        #     ac_snr = 0.0
+        ac_energy = np.sum(self.acousticBuffer[-3072:])
+        # print("Ac SNR --- ", ac_snr)
+        # if(ac_energy != 0.0):
+        #     print(f"acoustic-energy = {ac_energy}")
+
+        # Step 5: Compute SNR w Noise 
+        noise_mean = np.nanmean(noise)
+        if(noise_mean == 0):
+            noise_mean = np.inf
+        snr = current_energy/ noise_mean
+        #print("Energy SNR %f : NOISE SNR %f : Mean %f" %(snr, noise_mean))
         
         # Step 6: Compute the dynamic threshold and apply hysteresis logic
-        high_threshold = self.dynamicThreshold(mean_energy, std_energy, snr)
-        low_threshold = self.low_threshold_factor * std_energy
+        #high_threshold, low_threshold = self.dynamicThreshold(mean_energy, std_energy, snr)
+        high_threshold, low_threshold = self.dynamicThreshold2(mean_energy, std_energy, snr, use_snr=True)
 
-        if(self.debug):
-            print(f"Mean = {mean_energy} | StdDev = {std_energy}")
-            print(f"snr = {snr}")
-            print(f"hi_thresh = {high_threshold} | cur = {current_energy} | lo_thresh = {low_threshold}")
+        #if(self.debug):
+        
         
         if self.previous_detection:
             # We are currently detecting, check if energy falls below low threshold
-            if current_energy < low_threshold:
+            if ((ac_energy < self.trigger_thresh) and (current_energy < low_threshold)):
                 self.previous_detection = False  # Reset detection
                 self.pre_activation = False
                 self.timer_set = False
@@ -335,7 +386,7 @@ class SoundUtils():
                     print("\n\n--------------------------------Resetting detection!")
         else:
             # Check if current energy exceeds the high threshold to trigger a new detection
-            if (current_energy > high_threshold):
+            if ((ac_energy >= self.trigger_thresh) or (current_energy > high_threshold)):
                 self.pre_activation = True
                 self.elapsed_t = time.time()-self.trigger_time
                 #print("Elapsed: ", self.elapsed_t)
@@ -346,8 +397,8 @@ class SoundUtils():
             else: 
                 self.trigger_time = time.time()
                 self.pre_activation = False
-        return SignalInfo(mean_energy, std_energy, high_threshold, current_energy, low_threshold, snr, 
-                self.pre_activation, self.previous_detection)
+        return SignalInfo(mean_energy, std_energy, high_threshold, current_energy, low_threshold, 
+                          ac_energy, snr, self.pre_activation, self.previous_detection)
     
     def getSignalAnalysis(self):
         return self.sig_data
@@ -402,6 +453,8 @@ class SoundUtils():
         self.specLocalBuffer[:, :] = 0.0
         self.specGlobalBuffer[:, :] = 0.0
         self.energyBuffer[:, :] = 0.0
+        self.cnt = 0
+        self.isReady = False
     
     def dbsum(self, levels, axis=None):
         #print('DBSum Levels: ', levels)
@@ -637,9 +690,11 @@ class MissionData:
     uuid: str
     id: int
     name: str
+    result_dir: str
 
 class ROSLayerUtils(object):
-    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy snr')
+    DataPoint = namedtuple('DataPoint', 'id x y theta media mean_energy std_dev current_energy acoustic_energy snr detection isSolved relevant_image \
+                           presetName maximumFrequency minimumFrequency distance crest dynamic maximum')
     def __init__(self, debug=False) -> None:
         self.mediaDir = os.path.expanduser("~") + '/current'
         if(not os.path.exists(self.mediaDir)):
@@ -654,18 +709,21 @@ class ROSLayerUtils(object):
         self.missionID = None
         self.missionName = None
         self.path = None
-        self.metaData = dict({'datapoints':[], 'actionpoints':[]})
         self.localId = 1
         self.debug = debug
 
-    def prepareDirectory(self, id, name):
+    def prepareDirectory(self, id, name, path=None):
         self.missionID = id
         self.missionName = name
-        today = datetime.now().strftime("%Y_%m_%d")
-        msn_time = datetime.now().strftime("%H_%M")
-        self.path = os.path.join(self.msnDir, id, today, msn_time)
-        if(not os.path.exists(self.path)): 
-            os.makedirs(self.path)
+        if((path is not None) and (len(path) > 0) and os.path.exists(path)):
+            self.path = path
+            self.localId = 1 #reset internal id
+        else:
+            today = datetime.now().strftime("%Y_%m_%d")
+            msn_time = datetime.now().strftime("%H_%M")
+            self.path = os.path.join(self.msnDir, id, today, msn_time)
+            if(not os.path.exists(self.path)): 
+                os.makedirs(self.path)
         self.localId = 1 #reset internal id
     
     def getUniqueName(self, isImg=True, suffix=''):
@@ -682,41 +740,84 @@ class ROSLayerUtils(object):
         else:
             return self.mediaDir
     
-    def addMetaData(self, media, info, id=None, isActionPoint=False, useMsnPath=False, sigInfo:SignalInfo=None):
-        assignedId = self.localId if (id is None) else id
-        obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
-                                            float(info[0]), float(info[1]), float(info[2]), 
-                                            media, 
-                                            sigInfo.mean, sigInfo.std_dev, sigInfo.current, sigInfo.snr)
-        path = self.getPath(fetchMsnDir=useMsnPath)
-        if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
-            with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
-                self.metaData = yaml.safe_load(infofile)
-        
-        hasId = False
-        if(isActionPoint):
-            for obj_old in self.metaData['actionpoints']:
-                if(obj_old['id'] == assignedId):
-                    hasId = True
-                    for dt in obj.media:
-                        obj_old['media'].append(dt)
-                    break
-            if(not hasId):
-                self.metaData['actionpoints'].append(obj._asdict())
-        else:
-            for obj_old in self.metaData['datapoints']:
-                #print('Existing content: ', obj_old)
-                if(obj_old['id'] == assignedId):
-                    hasId = True
-                    for dt in obj.media:
-                        obj_old['media'].append(dt)
-                    break
-            if(not hasId):
-                self.metaData['datapoints'].append(obj._asdict())
-            self.localId += 1
+    def addMetaData(self, media, info, id=None, isActionPoint=False, preset=None, loop=1, sigInfo:SignalInfo=None, imgIdx=0, useMsnPath=False):
+        try:
+            assignedId = self.localId if (id is None) else id
+            preset_dt = ('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            if(preset is not None):
+                if(sigInfo is not None):
+                    leakage_rate = ((abs(sigInfo.acoustic - sigInfo.mean) - 1.8) * 2.5)
+                    if (leakage_rate > 50.0):
+                        leakage_rate = 49.99
+                    if ((sigInfo.acoustic <= 1.0) or (leakage_rate < 0.0)):
+                        leakage_rate = 0.0
+                else:
+                    leakage_rate = 0.0
+                preset_dt = (preset.presetName, preset.maxFrequency, preset.minFrequency,
+                             preset.distance, preset.crest, preset.dynamic, preset.maximum)
+            obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(assignedId, 
+                                                float(info[0]), float(info[1]), float(info[2]), 
+                                                media,
+                                                float(leakage_rate), float(sigInfo.std_dev), 
+                                                float(sigInfo.current), float(sigInfo.acoustic),
+                                                float(sigInfo.SNR), sigInfo.detection,
+                                                False, int(imgIdx), *preset_dt) #float(sigInfo.mean), float(sigInfo.std_dev),
+            path = self.getPath(fetchMsnDir=useMsnPath)
+            loop = str(loop)
+            #print('Current Loop is: ', loop)
+            if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
+                with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
+                    self.metaData = yaml.safe_load(infofile)
+                    #check by the current loop
+                    if(loop not in self.metaData.keys()):
+                        self.metaData[loop] = {'datapoints':[], 'actionpoints':[]}
+            else:
+                self.metaData = dict({loop: {'datapoints':[], 'actionpoints':[]}})
 
-        with open(os.path.join(path, 'meta-data.yaml') , 'w') as infofile: #write meta data file
-            yaml.dump(self.metaData, infofile)
+            hasId = False
+            if(isActionPoint):
+                for obj_old in self.metaData[loop]['actionpoints']: #check if actionpoint in metadata
+                    if(obj_old['id'] == assignedId):
+                        hasId = True
+                        for dt in obj.media:
+                            obj_old['media'].append(dt)
+                            # update signal Parameters
+                            obj_old['acoustic_energy'] = obj.acoustic_energy
+                            obj_old['current_energy'] = obj.current_energy
+                            obj_old['detection'] = obj.detection
+                            obj_old['mean_energy'] = obj.mean_energy
+                            obj_old['relevant_image'] = obj.relevant_image
+                            obj_old['snr'] = obj.snr
+                            obj_old['std_dev'] = obj.std_dev
+                        break
+                if(not hasId):
+                    self.metaData[loop]['actionpoints'].append(obj._asdict())
+            else:
+                for obj_old in self.metaData[loop]['datapoints']: #check if datapoint in metadata
+                    #print('Existing content: ', obj_old)
+                    if(obj_old['id'] == assignedId):
+                        hasId = True
+                        for dt in obj.media:
+                            obj_old['media'].append(dt)
+                        # update signal Parameters
+                        obj_old['acoustic_energy'] = obj.acoustic_energy
+                        obj_old['current_energy'] = obj.current_energy
+                        obj_old['detection'] = obj.detection
+                        obj_old['mean_energy'] = obj.mean_energy
+                        obj_old['relevant_image'] = obj.relevant_image
+                        obj_old['snr'] = obj.snr
+                        obj_old['std_dev'] = obj.std_dev
+                        break
+                if(not hasId):
+                    self.metaData[loop]['datapoints'].append(obj._asdict())
+                self.localId += 1
+
+            with open(os.path.join(path, 'meta-data.yaml') , 'w') as infofile: #write meta data file
+                yaml.dump(self.metaData, infofile)
+            return True
+        except Exception as e:
+            print('Exception caught! ', e)
+            return False
 
     def eulerDistance(self, coords:list):
         return math.sqrt(math.pow((coords[0] - 320), 2) + 
@@ -766,13 +867,18 @@ class ROSLayerUtils(object):
             frame_list.pop(0)  # Remove the oldest frame
     
     def createSnapshotFromFrame(self, frame, filename=None):
+        if(frame is None):
+            return
         if(filename is None):
             save_to = os.path.join(self.mediaDir, self.curImg)
         else:
             save_to = os.path.join(self.getPath(fetchMsnDir=True), filename)
         if(self.debug):
             print('Saving snaphsot to: ', save_to)
-        cv2.imwrite(save_to, frame)
+        try:
+            cv2.imwrite(save_to, frame)
+        except Exception as e:
+            print('SC| Error creating snapshot: ', e)
     
     def createVideoFromFrames(self, frame_list:list, filename=None, fps=10):
         if not frame_list:

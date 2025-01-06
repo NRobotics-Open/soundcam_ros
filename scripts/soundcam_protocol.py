@@ -11,12 +11,15 @@ import re
 from multiprocessing.managers import BaseProxy, BaseManager
 
 Features = namedtuple('Features', 'LED Ultrasound Microcontroller Battery IR TachoTrigger')
+Status = namedtuple('Status', 'isListenerCreated isConnectedHost isBitfileLoaded isBitfileRunning isTransferActive')
 MDDataMessage = namedtuple('MDDataMessage', 'Command InvokeId Reserved DataLength ObjectCount')
+MDLeakRateData = namedtuple('MDLeakRateData', 'TimeStamp LeakRate State Reserved1 Reserved2')
 class CommandCodes(Enum):
     ResetReq = 0x80
     ResetRes = 0x00
     IdentificationReq = 0x84
     IdentificationRes = 0x04
+    UDPIdentificationRes = 0x05
     PrepareStateReq = 0x86
     PrepareStateRes = 0x06
     FinishStateReq = 0x87
@@ -152,6 +155,7 @@ class DataObjects(object):
         MicLevels = 0xC001                      #R + Data
         RawDataStream = 0xC002                  #Data
         NoOfStreamingSamples = 0xC008           #R + W
+        LeakRate = 0x0B00                       #R
     
     '''Device Type Ids'''
     class TypeIds(Enum):
@@ -336,8 +340,11 @@ class CameraProtocol(object):
                             IPAddress PCBSerialNumber Features1 Features2 Features3 Status2 ConnectIP DeviceState \
                             SubState Error Step0 Step_1 TemperatureCPU TemperatureTop TemperatureBottom \
                             CPULoad_1 CPULoad_2')
+    UdpResponse = namedtuple('UdpResponse', 'Command InvokeId Reserved Status1 DataLength DeviceProtocolVersion \
+                            DeviceId DeviceMode DeviceError DeviceSerialNumber SiliconSerialNumber HardwareVersion \
+                            BootloaderVersion FirmwareVersion FPGAVersion ProductionDate CalibrationDate MACAddress \
+                            IPAddress PCBSerialNumber')
     GenericResponse = namedtuple('GenericResponse', 'Command InvokeId Reserved Status DataLength')
-    Status = namedtuple('Status', 'isListenerCreated isConnectedHost isBitfileLoaded isBitfileRunning isTransferActive')
     ReadDataObjectResponse = namedtuple('ReadDataObjectResponse', 'Command InvokeId Reserved Status DataLength DataObjectCount')
 
     def __init__(self, protocol:int=3, debug=False):
@@ -419,13 +426,24 @@ class CameraProtocol(object):
                             'SubState', 'Error', 'Step0', 'Step_1', 'TemperatureCPU', 'TemperatureTop', 'TemperatureBottom', \
                             'CPULoad_1', 'CPULoad_2')(input._asdict())
             self.hasInitialStatus = True
+        elif(type(input) is CameraProtocol.UdpResponse):
+            self.Command, self.InvokeId, self.Reserved, self.Status1, self.DataLength, self.DeviceProtocolVersion, \
+            self.DeviceId, self.DeviceMode, self.DeviceError, self.DeviceSerialNumber, \
+            self.SiliconSerialNumber, self.HardwareVersion, self.BootloaderVersion, self.FirmwareVersion, \
+            self.FPGAVersion, self.ProductionDate, self.CalibrationDate, self.MACAddress, self.IPAddress, \
+            self.PCBSerialNumber = \
+                itemgetter('Command', 'InvokeId', 'Reserved', 'Status1', 'DataLength', 'DeviceProtocolVersion' \
+                            ,'DeviceId', 'DeviceMode', 'DeviceError', 'DeviceSerialNumber', 'SiliconSerialNumber', 'HardwareVersion', \
+                            'BootloaderVersion', 'FirmwareVersion', 'FPGAVersion', 'ProductionDate', 'CalibrationDate', 'MACAddress', \
+                            'IPAddress', 'PCBSerialNumber')(input._asdict())
+            self.hasInitialStatus = False
         elif(type(input) is DataObjects.SDCommonStatus):
             _, _, _, self.Error, DeviceState, SubState = \
                 itemgetter('ObjetID', 'ObjectType' ,'Length', 'ErrorCode',\
                             'DeviceState', 'SubState')(input._asdict())
             self.DeviceState = Device.DeviceStates(DeviceState)
             self.SubState = Device.SubStates(SubState)
-    
+
     def unpackDecodeResponse(self, response:bytes)->None:
         if(response):
             # if(len(response) < 1460):
@@ -435,6 +453,11 @@ class CameraProtocol(object):
                 cmd = int.from_bytes(response[:1], byteorder='little')
                 if(cmd == CommandCodes.IdentificationRes.value):
                     unpacked.append(CameraProtocol.IdResponse._make(struct.unpack('<2BH7LQ4L4s4s12s2L4B4L2H3f2L', response[:128])))
+                elif(cmd == CommandCodes.UDPIdentificationRes.value):
+                    if(len(response) > 84): #Extended message
+                        unpacked.append(CameraProtocol.IdResponse._make(struct.unpack('<2BH7LQ4L4s4s12s2L4B4L2H3f2L', response[:128])))
+                    else: #Normal Broadcast response
+                        unpacked.append(CameraProtocol.UdpResponse._make(struct.unpack('<2BH7LQ4L4s4s12s2L', response[:84])))
                 elif(cmd == CommandCodes.ReadDataObjectRes.value): #Read Response
                     dstr = '<2BH3L'
                     arr_idx = struct.Struct(dstr).size
@@ -545,7 +568,6 @@ class CameraProtocol(object):
                             print('Next Idx(Len): ', arr_idx)
                             return None
 
-
                 elif((cmd == CommandCodes.ResetRes.value) or 
                     (cmd == CommandCodes.StartProcedureRes.value) or 
                     (cmd == CommandCodes.StopProcedureRes.value) or
@@ -568,7 +590,7 @@ class CameraProtocol(object):
         else: #iterative decoding and storage
             for unpacked in unpackedLs:
                 data = None
-                if(type(unpacked) is CameraProtocol.IdResponse):
+                if((type(unpacked) is CameraProtocol.IdResponse)):
                     devId = hex(unpacked.DeviceId).upper()
                     sserialNum = hex(unpacked.SiliconSerialNumber).upper()
                     bootLoaderVer = hex(unpacked.BootloaderVersion).upper()
@@ -581,7 +603,7 @@ class CameraProtocol(object):
                     subState = Device.SubStates(unpacked.SubState)
                     deviceIP = socket.inet_ntoa(struct.pack('!L', unpacked.IPAddress))
                     features1 = Features._make(int2ba(unpacked.Features1, 6, endian='little'))
-                    status2 = CameraProtocol.Status._make(int2ba(unpacked.Status2, 5, endian='little'))
+                    status2 = Status._make(int2ba(unpacked.Status2, 5, endian='little'))
                     data = unpacked._replace(DeviceId = devId, SiliconSerialNumber = sserialNum,
                         BootloaderVersion = bootLoaderVer, FirmwareVersion = firmwareVer,              
                         IPAddress = deviceIP, ConnectIP = connectIP, MACAddress = MAC, 
@@ -590,10 +612,23 @@ class CameraProtocol(object):
 
                     if(unpacked.Status1 == 0):
                         if(self.debug):
-                            print('Command successful')
+                            print('Camera not in Error')
                     else:
-                        print('Command failed')
+                        print('Camera in Error')
                         self.processError(unpacked.Status1)
+                elif((type(unpacked) is CameraProtocol.UdpResponse)):
+                    devId = hex(unpacked.DeviceId).upper()
+                    sserialNum = hex(unpacked.SiliconSerialNumber).upper()
+                    bootLoaderVer = hex(unpacked.BootloaderVersion).upper()
+                    firmwareVer = hex(unpacked.FirmwareVersion).upper()
+                    prodDate = self.decodeDate(unpacked.ProductionDate)
+                    calibDate = self.decodeDate(unpacked.CalibrationDate)
+                    deviceIP = socket.inet_ntoa(struct.pack('!L', unpacked.IPAddress))
+                    data = unpacked._replace(DeviceId = devId, SiliconSerialNumber = sserialNum,
+                        BootloaderVersion = bootLoaderVer, FirmwareVersion = firmwareVer,              
+                        IPAddress = deviceIP, 
+                        ProductionDate = prodDate, CalibrationDate = calibDate)
+
                 elif(type(unpacked) is CameraProtocol.GenericResponse):
                     if(self.debug):
                         print('Response [Reset/State/Procedure]')
@@ -662,7 +697,8 @@ class CameraProtocol(object):
                         'subState': self.SubState,
                         'deviceIP': self.IPAddress,
                         'deviceMAC': self.MACAddress, 
-                        'Features': self.Features1})
+                        'Features': self.Features1,
+                        'Status': self.Status2})
         return None
 
     def processError(self, data:GenericResponse):
@@ -688,7 +724,7 @@ class CameraProtocol(object):
         self.stateProcStatus[DataMessages.Status.PrepareStateRes.value] = 0
         self.stateProcStatus[DataMessages.Status.StopProcRes.value] = 1
         self.stateProcStatus[DataMessages.Status.StartProcRes.value] = 0
-    
+
     def unpackDataMessage(self, response:bytes)->MDDataMessage:
         dstr = '<2BH2L'
         try:
@@ -727,15 +763,24 @@ class CameraProtocol(object):
         try:
             dstr = '<Q6L'
             dssize = struct.calcsize(dstr)
-            unpack = struct.unpack(dstr, data[:dssize])
+            info = struct.unpack(dstr, data[:dssize])
             #acvid = DataObjects.MDAcousticImageData._make()
             #data.seek(dssize)
             frameData:np.array = np.array(
                 struct.unpack('<3072f', data[dssize:]), dtype=np.float32).reshape(48, 64)
-            return (unpack, frameData)
+            return (info, frameData)
         except Exception as ex:
             print(ex)
             return (None, None)
+    
+    ''' Unpacks, Decodes the received leak rate bytes '''
+    def unpackDecodeLeakRateData(self, data:bytes)->MDLeakRateData:
+        dstr = '<Qf2BH'
+        try:
+            return MDLeakRateData._make(struct.unpack(dstr, data))
+        except Exception as ex:
+            print(ex)
+            return None
     
     ''' Unpacks, Decodes the received spectrum bytes '''
     def unpackDecodeSpectrumData(self, data:bytes):
@@ -945,7 +990,7 @@ class CameraProtocol(object):
         query += dataQuery
         return query
     
-    def dataToSendConfig(self, invokeId, dataToSend1:int = 0, dataToSend2:int = 0)->bytes:
+    def dataToSendConfig(self, invokeId, dataToSend1:int = 0, dataToSend2:int = 0, dataToSend3:int = 0)->bytes:
         pkg = DataObjects.DataObjPk._make((DataObjects.Ids.DataToSend, '<2H8B'))
         dataLength = 4 + struct.Struct(pkg.Struct).size
         query = struct.pack('<BBHLL', CommandCodes.WriteDataObjectReq.value, invokeId, 0, dataLength, 1)
@@ -953,7 +998,7 @@ class CameraProtocol(object):
             '''AcVid|Vid|Thermal|Audio|MicLvl|MicRaw|Spectra|SingleMicData'''
             dataToSend1 = ba2int(bitarray('11010010', endian='little'))
         query += struct.pack(pkg.Struct, *(DataObjects.Ids.DataToSend.value, 
-                                            3, dataToSend1, 0, dataToSend2, 0, 0, 0, 0, 0))
+                                            3, dataToSend1, dataToSend2, dataToSend3, 0, 0, 0, 0, 0))
         return query
     
     '''
@@ -984,7 +1029,7 @@ class CameraProtocol(object):
 class CameraProtocolProxy(BaseProxy):
     _exposed_ = ('unpackDecodeResponse', 'getDeviceStatus', 'setStreamFlags', \
                  'unsetStreamFlags', 'unpackDataMessage', 'unpackDataObjectHeader', \
-                 'unpackDecodeVideoData', 'unpackDecodeAcousticVideoData', \
+                 'unpackDecodeVideoData', 'unpackDecodeAcousticVideoData', 'unpackDecodeLeakRateData',\
                  'unpackDecodeSpectrumData', 'unpackDecodeAudioData', \
                  'unpackDecodeThermalVideoData', 'writeDistance', 'writeFrequencyRange', \
                  'writeCameraLighting', 'generateReadRequest', 'ConfigureCamera', \
@@ -1027,6 +1072,9 @@ class CameraProtocolProxy(BaseProxy):
     def unpackDecodeAcousticVideoData(self, data:bytes):
         return self._callmethod('unpackDecodeAcousticVideoData', (data,))
     
+    def unpackDecodeLeakRateData(self, data:bytes)->MDLeakRateData:
+        return self._callmethod('unpackDecodeLeakRateData', (data,))
+    
     def unpackDecodeSpectrumData(self, data:bytes):
         return self._callmethod('unpackDecodeSpectrumData', (data,))
     
@@ -1053,8 +1101,8 @@ class CameraProtocolProxy(BaseProxy):
         return self._callmethod('ConfigureCamera', (invokeId, distance, freqRange, 
                                             resolution, acousticsRate, acousticAvg,))
     
-    def dataToSendConfig(self, invokeId, dataToSend1:int = 0, dataToSend2:int = 0):
-        return self._callmethod('dataToSendConfig', (invokeId, dataToSend1, dataToSend2,))
+    def dataToSendConfig(self, invokeId, dataToSend1:int = 0, dataToSend2:int = 0, dataToSend3:int = 0):
+        return self._callmethod('dataToSendConfig', (invokeId, dataToSend1, dataToSend2, dataToSend3,))
     
     def setState(self, invokeId:int, 
                  state:Device.DeviceStates= Device.DeviceStates.Unknown):
