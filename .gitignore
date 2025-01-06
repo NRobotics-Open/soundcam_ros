@@ -1,4 +1,4 @@
 ### VisualStudioCode ###
 .vscode/
-**/__python_cache__/
-scripts/__pycache__/
+**/__python_cache__/*
+scripts/__pycache__/*

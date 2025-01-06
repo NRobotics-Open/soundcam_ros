@@ -5,7 +5,7 @@ tcp_port: 6340
 udp_port: 51914
 udp_receive_port: 51915
 protocol: 3
-driver_debug: False
+driver_debug: True
 system_run: False #if False: turns off all visualizations & uses ROS publishers
 gui_hostname: 'localhost'
 gui_port: 65432
