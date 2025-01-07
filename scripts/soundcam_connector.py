@@ -7,33 +7,28 @@ from CAE Sofware & Systems GmbH.
 Developer: ephson@nrobotics.com
 '''
 
-import socket, time, atexit, os, io, sys, signal, subprocess, select, struct
-from threading import Thread
+import socket, time, os, sys, signal, subprocess, select, struct
 from enum import Enum
 from bitarray import bitarray
 import numpy as np, cv2
 np.set_printoptions(threshold=sys.maxsize)
 
-from matplotlib.animation import FuncAnimation, FFMpegWriter, writers
+from matplotlib.animation import FuncAnimation
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from soundcam_protocol import CommandCodes, DataMessages, MDDataMessage, Device, \
-    DataObjects, \
-    CameraProtocol, CameraProtocolProxy, CameraProtocolManager
-import multiprocessing
-from multiprocessing import Process, Semaphore
+    DataObjects, CameraProtocol, MDLeakRateData, Status
+from threading import Thread, Semaphore, Event
 from queue import Empty, Queue
 import SharedArray as sa
 import psutil
 
-from utils import SoundUtils as SU, SoundUtilsProxy as SUP, SoundUtilsManager, \
-    EuclideanDistTracker, SignalInfo
+from utils import SoundUtils as SU, EuclideanDistTracker, SignalInfo
 
 
 FIRMWARE_VERSION = '2.8.3.0'
-CONNECT_TIMEOUT = 25 #seconds
 
 class SoundCamConnector(object):
     class DTypes(Enum):
@@ -59,12 +54,10 @@ class SoundCamConnector(object):
         THERMAL = 3
         MAX = 4
 
-    def __init__(self, deviceIP:str='169.254.169.138', devicePort:int=6340, 
-                 protocol:int=3, cfgObj:dict={}, debug:bool = False) -> None:
+    def __init__(self, cfgObj:dict={}, debug:bool = False) -> None:
         print('Firmware Version: ', FIRMWARE_VERSION)
         self.debug = debug
         self.testing = False
-        self.send_to_gui = False
         self.invokeId = 1
         self.cfgObj = cfgObj
 
@@ -72,13 +65,11 @@ class SoundCamConnector(object):
         self.new_frame_t = 0
         self.prev_frame_t = 0
 
-        #prepare utils manager
-        # manager = SoundUtilsManager()
-        # manager.start()
-        # self.scamUtils = manager.SoundUtils()
+        #prepare utils
         self.scamUtils = SU(window=60, detectionWin=5, acFreq=10, specFreq=4, 
-                            dynamic_thresh_f=self.cfgObj['dynamic_thresh_factor'],
+                            hi_thresh_f=self.cfgObj['hi_thresh_factor'],
                             low_thresh_f=self.cfgObj['low_thresh_factor'],
+                            trigger_thresh=self.cfgObj['trigger_threshold'],
                             smoothing_win=self.cfgObj['smoothing_win'], 
                             trigger_duration=self.cfgObj['trigger_duration'])
         self.objTracker = EuclideanDistTracker()
@@ -107,15 +98,16 @@ class SoundCamConnector(object):
         self.recvStream = False
         self.hasStreamData = False
         self.canRun = True
-        self.processData = multiprocessing.Event()
+        self.processData = Event()
         self.processData.set()
         self.visualUp = False
         self.connected = False
         self.is_alive = False
-        self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.socket_instances_singleton = False
+        self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.leakRate:MDLeakRateData = MDLeakRateData(0, 0, 0, 0, 0)
 
         #prepare queues
-        self.processes = list()
         self.threads = list()
         self.queues = list()
         self.qDict = dict()
@@ -129,19 +121,19 @@ class SoundCamConnector(object):
 
         #post-processing setup
         self.overlayBA = bitarray(self.cfgObj['overlayConfig'])
-        self.vidBW = None
-        self.vidAC = None
-        self.vidTm = None
-        self.spectrum = None
-        self.audio = None
-
+        self.proc_vidBW = Queue(maxsize=3)
+        self.queues.append(self.proc_vidBW)
         self.proc_vidOBW = Queue(maxsize=3)
+        self.queues.append(self.proc_vidOBW)
         self.proc_acVidQ = Queue(maxsize=3)
+        self.queues.append(self.proc_acVidQ)
         self.proc_specQ = Queue(maxsize=3)
+        self.queues.append(self.proc_specQ)
         self.proc_audQ = Queue(maxsize=3)
+        self.queues.append(self.proc_audQ)
         self.proc_thmQ = Queue(maxsize=3)
+        self.queues.append(self.proc_thmQ)
             
-        #self.processes.append(Process(target=self.postProc))
         if(not self.cfgObj['system_run']): #prevent any form of visualization if not system_run
             #self.cfgObj['visualizeOverlay'] = False
             self.cfgObj['visualizeVideo'] = False
@@ -154,134 +146,198 @@ class SoundCamConnector(object):
         #     self.cfgObj['visualizeVideo'] = True
         
         if(self.cfgObj['processVideo']):
-            self.vidQ = Queue(maxsize=100)
+            self.vidQ = Queue(maxsize=30)
             self.queues.append(self.vidQ)
             self.threads.append(Thread(target=self.processVideo, daemon=True))
-            #self.processes.append(Process(target=self.processVideo, args=(self.vidQ, self.processData), name='vidProc'))
         if(self.cfgObj['processAcVideo']):
-            self.acVidQ = Queue(maxsize=100)
+            self.acVidQ = Queue(maxsize=30)
             self.queues.append(self.acVidQ)
             self.ac_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processAcVideo, daemon=True))
-            # self.processes.append(Process(target=self.processAcVideo, 
-            #                               args=(self.acVidQ, self.processData, 
-            #                                     self.scamUtils, self.ac_semaphore)))
         if(self.cfgObj['processSpectrum']):
-            self.specQ = Queue(maxsize=100)
+            self.specQ = Queue(maxsize=30)
             self.queues.append(self.specQ)
             self.spec_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processSpectrum, daemon=True))
-            # self.processes.append(Process(target=self.processSpectrum, 
-            #                               args=(self.specQ, self.processData, 
-            #                                     self.scamUtils, self.spec_semaphore)))
         if(self.cfgObj['processAudio']):
-            self.audQ = Queue(maxsize=100)
+            self.audQ = Queue(maxsize=30)
             self.queues.append(self.audQ)
             self.aud_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processAudio, daemon=True))
-            # self.processes.append(Process(target=self.processAudio, 
-            #                               args=(self.audQ, self.processData, 
-            #                                     self.scamUtils, self.aud_semaphore)))
         if(self.cfgObj['processThermal']):
-            self.thermalQ = Queue(maxsize=100)
+            self.thermalQ = Queue(maxsize=30)
             self.queues.append(self.thermalQ)
             self.threads.append(Thread(target=self.processThermalVideo, daemon=True))
-            # self.processes.append(Process(target=self.processThermalVideo, 
-            #                               args=(self.thermalQ, self.processData)))
+        
+        if(self.cfgObj['dataToSend2'] > 0):
+            self.leakRateQ = Queue(maxsize=30)
+            self.queues.append(self.leakRateQ)
+            self.threads.append(Thread(target=self.processLeakRate, daemon=True))
+
         # if(self.cfgObj.p_pubRaw):
         #     self.rawQ = Queue()
         #     self.qDict[SoundCamConnector.DTypes.RAW.name] = self.rawQ
-        #     self.processes.append(Process(target=self.publishRaw, args=(self.rawQ, self.processData)))
+        #     self.threads.append(Thread(target=self.publishRaw, args=(self.rawQ, self.processData)))
         
         if(self.cfgObj['visualizeAudio'] or self.cfgObj['visualizeSpectrum']):
-            self.processes.append(Process(target=self.displayProcess, args=(self.processData,)))
+            self.threads.append(Thread(target=self.displayProcess, args=(self.processData,)))
 
-        #prepare protocol manager
-        # self.protocmanager = CameraProtocolManager()
-        # self.protocmanager.start()
-        # self.protocol = self.protocmanager.CameraProtocol(protocol=self.cfgObj['protocol'], debug=self.debug)
+        #prepare protocol
         self.protocol = CameraProtocol(protocol=self.cfgObj['protocol'], debug=self.debug)
-
-        #start threads
-        # self.globalQ = Queue(maxsize=65)
-        # self.queues.append(self.globalQ)
+        
+        if(self.debug):# Start the memory monitor in the main process
+            self.threads.append(Thread(target=self.monitorMemory, daemon=True))
         self.threads.append(Thread(target=self.receiveCyclic3, daemon=True))
-        #self.threads.append(Thread(target=self.streamFilter))
-        # Start the memory monitor in the main process
-        # if(self.debug):
-        #     self.threads.append(Thread(target=self.monitor_memory, daemon=True))
+
+        #create sockets
+        self._createSockets()
+        #start threads
         for th in self.threads:
             th.start()
-        
-        #start processes
-        print('Starting processes ...')
-        # self.processes.append(Process(target=self.streamFilter, args=(self.qDict, self.processData)))
-        for proc in self.processes:
-            proc.start()
         
 
         #Note: All data is sent as Little Endian!
     
     '''Ping Camera'''
-    def pingCamera(self, deviceIP):
-        #check SoundCam Connectivity and Initialize connection
-        #start_t = time.time()
-        # while(True):
-        #res = os.system("ping -c 1 " + deviceIP)
+    def pingCamera(self, deviceIP)->bool:
         proc = subprocess.Popen(["ping", deviceIP, "-c", "1", "-W", "2"], 
                                 stdout=subprocess.PIPE)
         proc.wait()
         if(proc.poll() == 0):
             self.is_alive = True
             return True
-            # if((time.time() - start_t) > CONNECT_TIMEOUT):
-            #     print('Camera not connected. Check network configuration!')
-            #     break
-            # time.sleep(0.5)
         return False
+    
+    '''
+        Create socket instances for later use
+    '''
+    def _createSockets(self):
+        if(not self.socket_instances_singleton):
+            print('Creating socket instances ...')
+            self.ip_addr = self.cfgObj['ip'] 
+            self.tcp_port = self.cfgObj['tcp_port']
+            self.broadcast_ip = self.cfgObj['broadcast_ip']
+            self.udp_port = self.cfgObj['udp_port']
+            self.udp_recv_port = self.cfgObj['udp_receive_port']
+            
+            #UDP sockets creation
+            self.udp_sock = socket.socket(socket.AF_INET, # IPv4
+                            socket.SOCK_DGRAM, socket.IPPROTO_UDP) # UDP SOCK_DGRAM   #TCP SOCK_STREAM
+            self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            if hasattr(socket, "SO_REUSEPORT"):
+                self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            
+            self.udp_recv_sock = socket.socket(socket.AF_INET, # IPv4
+                            socket.SOCK_DGRAM, socket.IPPROTO_UDP) # UDP SOCK_DGRAM   #TCP SOCK_STREAM
+            self.udp_recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            if hasattr(socket, "SO_REUSEPORT"):
+                self.udp_recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                self.udp_recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.udp_recv_sock.bind(("", self.udp_recv_port))
+            self.udp_recv_sock.settimeout(0.5)
+
+            #TCP socket creation
+            self.sock = socket.socket(socket.AF_INET, # IPv4
+                                    socket.SOCK_STREAM) # UDP SOCK_DGRAM   #TCP SOCK_STREAM
+            if hasattr(socket, "SO_REUSEPORT"):
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            self.socket_instances_singleton = True
+            print(f'Created IPs: \n\tTCP IP -> {self.ip_addr} \n\tBROADCAST IP -> {self.broadcast_ip} \nPorts: \n\tTCP -> {self.tcp_port} \n\tUDP -> {self.udp_port} \n\tUDP-Recv -> {self.udp_recv_port}')
+
+    
+    '''
+        Broadcast query for available cameras and status
+    '''
+    def AKAMsAssemble(self, detectDevice=False):
+        try:
+            if(not detectDevice):
+                MESSAGE = b"SoundCams send your ID"
+                self.udp_sock.sendto(MESSAGE, (self.broadcast_ip, self.udp_port))
+                try:
+                    while True:
+                        data, addr = self.udp_recv_sock.recvfrom(1024)  # Buffer size 1024 bytes
+                        if(self.debug):
+                            print(f"[AKAMs]Id Response (extended) from {addr}: Length {len(data)}") #128 b
+                        self.protocol.unpackDecodeResponse(data)
+                        
+                        if(self.debug):
+                            statusObj:Status = self.protocol.getDeviceStatus()['Status']
+                            print('StatusObj: ', statusObj)
+                        return True
+                except socket.timeout:
+                    return False
+            else:
+                MESSAGE = b"Hello AKAMs send your ID"
+                self.udp_sock.sendto(MESSAGE, (self.broadcast_ip, self.udp_port))
+                self.connected = False
+                self.activeTrans = False
+                addrs = list()
+                try:
+                    print('Scanning for device(s) on network ...')
+                    while True:
+                        data, addr = self.udp_recv_sock.recvfrom(1024)  # Buffer size 1024 bytes
+                        
+                        if(self.debug):
+                            print(f"[AKAMs]Id Response from {addr}: Length {len(data)}") #84 b
+                        print(f"[AKAMs]Found device on IP: {addr}")
+                        addrs.append(addr)
+
+                        # self.protocol.unpackDecodeResponse(data)
+                        # statusObj:Status = self.protocol.getDeviceStatus()['Status']
+                except socket.timeout:
+                    if(len(addrs) > 0):
+                        return addrs
+                    else:
+                        print("[AKAMs] No device found!")
+                        return False
+        except Exception as ex:
+            print('Uncaught Error in AKAMsAssemble: ', ex)
+            return None
 
     '''
         Establishes connection with the camera and performs handshake (gets device Id)
     '''
     def connect(self):
-        ip_addr = self.cfgObj['ip'] 
-        port = self.cfgObj['port']
-        self.sock = socket.socket(socket.AF_INET, # IPv4
-                        socket.SOCK_STREAM) # UDP SOCK_DGRAM   #TCP SOCK_STREAM
-        if hasattr(socket, "SO_REUSEPORT"):
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        conState = False
         try:
-            self.sock.connect((ip_addr, port))
-            #self.sock.setblocking(False)
-            self.connected = True
+            if(self.AKAMsAssemble()): #found connected device
+                devStatus = self.protocol.getDeviceStatus()
+                #print(f'Connected Device Status: {devStatus}')
+                if(devStatus['deviceIP'] != self.ip_addr):
+                    print(f'Warning IP Mismatch detected. Connecting to device on: {devStatus['deviceIP']}')
+                    self.ip_addr = devStatus['deviceIP']
+                if(devStatus['Status'].isListenerCreated == 1):
+                    self.sock.connect((self.ip_addr, self.tcp_port))
+                    conState = True
+            else: #find and connnect to first available device
+                print('No Connected devices found, will scan for devices ...')
+                res = self.AKAMsAssemble(detectDevice=True)
+                if(res is False):
+                    return conState
+                else:
+                    print(f'Attempting connection to -> {res[0]}')
+                    self.sock.connect((res[0], self.tcp_port))
+                    self.ip_addr = res[0]
         except Exception as ex:
             print('Failure Establishing connection to device! ', ex)
             self.connected = False
-            return False
-        print("\nSocket initialized on: \t IP| %s PORT| %d" % (ip_addr, port))
+            return conState
+
+        print("\nSocket initialized on: \t IP| %s PORT| %d" % (self.ip_addr, self.tcp_port))
         print("Clearing buffer ...")
         self.emptyBuffer()
         print('Fetching device Id ...')
-        #Request device Identification
         query = self.protocol.generateReadRequest(command=CommandCodes.IdentificationReq, 
                                                   invokeId=self.invokeId)
         self.invokeId += 1
         query += self.protocol.writeCameraLighting(self.invokeId, 
                                                    self.cfgObj['cameraLighting'])
         self.sendData(query=query)
-        return self.connected
-    
-    ''' REGEX pattern matcher '''
-    def getMatch(self, buf):
-        match = None
-        for ptn in self.protocol.p_getPatterns():
-            res = ptn.search(buf)
-            if(match is None):
-                match = res
-            elif(res and (res.span()[0] < match.span()[0])):
-                match = res
-        return match
+        return conState
 
     '''Sends command to reset the camera'''
     def restartCamera(self):
@@ -299,7 +355,6 @@ class SoundCamConnector(object):
         self.scamUtils.resetBuffers()
         for _,q in self.qDict.items():
             self._clearQueue(q)
-
         return True
     
     def _clearQueue(self, q:Queue):
@@ -324,13 +379,10 @@ class SoundCamConnector(object):
         self.processData.clear()
         if(self.connected):
             try:
-                #print('Stopping measurement ...')
                 cv2.destroyAllWindows()
                 plt.close()
-                #self.stopStream()
                 self.stopMeasurement()
                 self.sock.close()
-                #print('done!')
             except Exception as ex:
                 print('Error closing connection: ', ex)
         try:
@@ -341,33 +393,18 @@ class SoundCamConnector(object):
             for th in self.threads:
                 if(th.is_alive()):
                     th.join(timeout=1)
-            print('Joining processes ...')
-            # self.protocmanager.join(timeout=1.0)
-            # print('Manager ended!')
-            for p in self.processes:
-                if(p.is_alive()):
-                    #print(f'Terminating {p.name}')
-                    p.terminate()
-                    p.join(timeout=1)  # Wait up to 1 second for process to terminate
-                    if(p.is_alive()):
-                        #print(f'Force killing {p.name}')
-                        os.kill(p.pid, signal.SIGKILL)
-                        p.join()
         except Exception as ex:
             print('Error joining processes/threads: ', ex)
     
     ''' Release shared memory blocks '''
     def release_shared(self):
         for i, shm in enumerate(self.shmnames):
-            #self.semaphores[i].acquire()
             try:
                 sa.delete(shm)
             except FileNotFoundError:
                 pass
             except Exception:
                 pass
-            #self.semaphores[i].release()
-        #del self.semaphores
 
     def signal_handler(self, sig, frame):
         print("Signal received, shutting down...")
@@ -412,21 +449,29 @@ class SoundCamConnector(object):
                             (self.cfgObj['camera_W'], self.cfgObj['camera_H']),
                             self.cfgObj['acimageFPS'], 
                             self.cfgObj['acAvg'])
-            self.invokeId += 1
-
             #concatenate PrepareState
+            self.invokeId += 1
             query += self.protocol.setState(self.invokeId, 
                                             Device.DeviceStates(self.cfgObj['deviceState']))#set device state
-            self.invokeId += 1
-
             #concatenate DataToSend
+            self.invokeId += 1
             query += self.protocol.dataToSendConfig(self.invokeId, 
                                                     dataToSend1=self.cfgObj['dataToSend1'],
-                                                    dataToSend2=self.cfgObj['dataToSend2'])
+                                                    dataToSend2=self.cfgObj['dataToSend2'],
+                                                    dataToSend3=self.cfgObj['dataToSend3'])
             self.invokeId += 1
             if(getQuery):
                 return query
             self.sendData(query=query)
+
+            while True:
+                self.AKAMsAssemble()
+                if(self.protocol.getDeviceStatus()['Status'].isConnectedHost == 1):
+                    self.connected = True
+                    print('Connected to Host!')
+                    break
+                time.sleep(0.5)
+
         except Exception as ex:
             print('Error Configuring device!', ex)
             return False
@@ -442,48 +487,25 @@ class SoundCamConnector(object):
                 acoustic Averaging
             - Updates the acoustic filter
     '''
-    def updatePreset(self, mode, distance, minFreq, maxFreq,
-                     dynamic=3.1, crest=5.0, maximum=None):
+    def updatePreset(self, mode:int, distance:int, minFreq:int, maxFreq:int,
+                     dynamic:float=3.1, crest:float=5.0, maximum=None):
+        #set freq range
+        self.invokeId += 1
+        query = self.protocol.writeFrequencyRange(self.invokeId, (minFreq, maxFreq))
+        self.invokeId += 1
+        #self.sendData(query=query)
+
+        #set distance
+        query += self.protocol.writeDistance(self.invokeId, distance)
+        self.invokeId += 1
+        self.sendData(query=query)
         self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
                                           max=maximum, crest=crest, minF=minFreq, maxF=maxFreq)
         self.scamUtils.resetBuffers()
         return True
-        self.hasStreamData = False
-        try:
-            #configure acoustic filter
-            self.scamUtils.setScalingMode(mode=SU.ScalingMode(mode), dynamic=dynamic, 
-                                          max=maximum, crest=crest, minF=minFreq, maxF=maxFreq)
-            #Configure with WriteObjectReq request --- multiple
-            query = self.protocol.ConfigureCamera(self.invokeId, 
-                            distance, (minFreq, maxFreq), 
-                            (self.cfgObj['camera_W'], self.cfgObj['camera_H']),
-                            self.cfgObj['acimageFPS'], 
-                            self.cfgObj['acAvg'])
-            #concatenate PrepareState
-            self.invokeId += 1
-            query += self.protocol.setState(self.invokeId, 
-                                            Device.DeviceStates(self.cfgObj['deviceState']))#set device state
-            #concatenate DataToSend
-            self.invokeId += 1
-            query += self.protocol.dataToSendConfig(self.invokeId, 
-                                                    dataToSend1=self.cfgObj['dataToSend1'],
-                                                    dataToSend2=self.cfgObj['dataToSend2'])
-            self.invokeId += 1
-            self.sendData(query=query)
-            self.scamUtils.resetBuffers()
-        except Exception as ex:
-            print('Error Configuring device!', ex)
-            return False
-        return True
     
     def startMeasurement(self)->bool:
         try:
-            """ query = self.protocol.setState(self.invokeId, Device.DeviceStates.Streaming)#set streaming state
-            self.sendData(query=query)
-            query = self.protocol.dataToSendConfig(self.invokeId)
-            self.sendData(query=query) """
-            # query = camObj.protocol.writeVidFPS(self.invokeId, self.cfgObj['videoFPS'])
-            # self.invokeId += 1
             query = self.protocol.startStopProcedure(self.invokeId) #start procedure
             self.invokeId += 1
             self.sendData(query=query)
@@ -514,44 +536,6 @@ class SoundCamConnector(object):
         return self.protocol.isStreaming()
     
     '''Packs the continuous incoming stream to the generic Queue'''
-    
-    def receiveCyclic(self):
-        print('Cyclic thread started ...')
-        start_t = time.time()
-        # heartrate = 1/ self.cfgObj['heartbeatRate']
-        # heart_t = time.time()
-        commonstatus_t = time.time()
-        while(self.processData.is_set() and self.canRun):
-            if(self.connected):
-                try:
-                    res = self.sock.recv(self.bufSize)
-                    if(res):
-                        if(self.recvStream):
-                            #self._addQueue(self.globalQ, res, cast=False)
-                            self.globalQ.put(res)
-                            if(not self.hasStreamData):
-                                self.hasStreamData = True
-                        else: #if not streaming
-                            try:
-                                self.protocol.unpackDecodeResponse(response=res)
-                            except Exception as ex:
-                                print('\nError Unpacking and Decoding ...')
-
-                    now = time.time()
-                    if((not self.recvStream) and self.protocol.p_isConfigured()): #query for common status when not receiving stream
-                        if((now - commonstatus_t) >= 0.5):
-                            query = self.protocol.generateReadRequest(command=CommandCodes.ReadDataObjectReq, invokeId=self.invokeId, dataLs=[DataObjects.Ids.CommonStatus])
-                            self.sendData(query)
-                            commonstatus_t = now
-                    
-                    if((now - start_t) >= 10.0 and self.connected and self.debug):
-                        print('Cyclic loop running ...')
-                        start_t = time.time()
-                except Exception:
-                    pass
-            else:
-                #print('Awaiting socket connnection ...')
-                time.sleep(0.1)
     
     def emptyBuffer(self):
         """remove the data present on the socket"""
@@ -745,6 +729,9 @@ class SoundCamConnector(object):
                             elif(objhdr[0] == DataObjects.Ids.CommonStatus.value): #common status
                                 #TODO: call function to decode
                                 pass
+                            elif(objhdr[0] == DataObjects.Ids.LeakRate.value):
+                                print('Got Leakage data', datablock)
+                                self._addQueue(self.leakRateQ, datablock)
                             else: #raw probably data
                                 # print(res, ' | ',cmd_obj)
                                 # print('Got Raw block ---')
@@ -785,266 +772,6 @@ class SoundCamConnector(object):
                 #print('Awaiting socket connnection ...')
                 time.sleep(0.1)
         exit(-9)
-    
-
-    def _routeData(self, curId, curBf, rawQ=None):
-        if curId == DataObjects.Ids.AcousticVideoData.value:
-            self._addQueue(self.acVidQ, curBf)
-        elif curId == DataObjects.Ids.VideoData.value:
-            self._addQueue(self.vidQ, curBf)
-        elif curId == DataObjects.Ids.SpectrumData.value:
-            self._addQueue(self.specQ, curBf)
-        elif curId == DataObjects.Ids.AudioData.value:
-            self._addQueue(self.audQ, curBf)
-        elif curId == DataObjects.Ids.ThermalVideoData.value:
-            self._addQueue(self.thermalQ, curBf)
-        elif curId == DataObjects.Ids.RawData.value and rawQ is not None:
-            self._addQueue(rawQ, curBf)
-        elif curId == DataObjects.Ids.CommonStatus.value:
-            pass
-    
-    def _readBytes(self, inBuff:memoryview, curReadPos:int, bufLen:int):
-        rdLen = len(inBuff) - curReadPos
-        try:
-            if(rdLen < bufLen):
-                return (inBuff[curReadPos: (curReadPos + rdLen)].tobytes(), (curReadPos + rdLen), rdLen)
-            return (inBuff[curReadPos:(curReadPos + bufLen)].tobytes(), (curReadPos + bufLen), bufLen)
-        except Exception as e:
-            print('Error reading bytes from memoryview object')
-            exit(99)
-        
-    '''Filters the generic Deque to the corresponding Deques based on the type'''
-    def streamFilter(self):
-        print('Starting stream filter ...')
-        canPopfromQ:bool = True
-        contRead:bool = False
-        curBf = bytes()
-        xsData = bytes()
-        inObj = bytes()
-        curId:int = 0
-        remainingLen:int = 0
-        readPos:int = 0
-        
-        #get queues
-        rawQ = None
-
-        debug = False
-
-                  
-        dmsg:MDDataMessage = None
-        isHdrPkt = False
-        canPrintLen = True
-
-        while(self.canRun):
-            #read queue and filter
-            if(not self.globalQ.empty()):
-                if(not self.protocol.p_hasInitialStatus()):
-                    if(debug):
-                        print('Clearing Q: camera not initialized!')
-                    self._clearQueue(self.globalQ)
-                # if(globalQ.qsize() > 50):
-                #     print('Global Queue Size: ', globalQ.qsize())
-                
-                if(canPopfromQ):
-                    if(debug):
-                        print('Popping from Queue ...')
-                    try:
-                        inObj = self.globalQ.get_nowait()
-                    except Empty:
-                        continue
-                    sz = len(inObj)
-                    if(canPrintLen and (sz == self.bufSize)):
-                        isHdrPkt = True
-                    
-                    if((sz < self.bufSize) and not isHdrPkt):
-                        canPrintLen = True
-                    
-                    if(xsData):
-                        inObj = xsData + inObj
-                        xsData = bytes()
-                        sz = len(inObj)
-                        if(debug):
-                            print('Prepended xsData ...')
-                    else:
-                        data = memoryview(inObj)
-                        readPos = 0
-                
-                    if(contRead):#if fetching subsequent bytes #TODO revisit this logic with readPos parameter
-                        if(debug):
-                            print('Fetching subsequent for ObjectType: ', curId)
-                        rd, readPos, readsz = self._readBytes(data, readPos, remainingLen)
-                        #print('SubReadSize: ', readsz, '\nSubsequent:  ', rd)
-                        curBf += rd
-                        if(readsz == remainingLen):
-                            if(debug):
-                                print('Appending to corresponding deque ...')
-                            self._routeData(curId=curId, curBf=curBf)
-                            #reset params
-                            curId = 0
-                            curBf = bytes()
-                            contRead = False 
-                            remainingLen = 0
-                            if(remainingLen == sz):
-                                continue
-                        else: #if not all bytes fetched, recalculate remaining length
-                            remainingLen = remainingLen - readsz
-                            if(debug):
-                                print('More data required. RemainingLength: ', remainingLen)
-                            canPopfromQ = True
-                            continue #go back to start
-                else:
-                    #print('previous Queue processing ...')
-                    #reset buffers
-                    if(readPos != 0):
-                        inObj = data[readPos:].tobytes()
-                        data = memoryview(inObj)
-                        readPos = 0
-                    canPrintLen = True
-                    isHdrPkt = True
-                    #print('\nPrev Content: ', inObj)
-                
-                if(canPrintLen and isHdrPkt):
-                    if(inObj):
-                        hdr, readPos, _ = self._readBytes(data, readPos, 12)
-                        if(hdr == b'' or len(hdr) < 12):
-                            canPopfromQ = True
-                            continue
-                        dmsg = self.protocol.unpackDataMessage(hdr)
-                        if(dmsg is None):
-                            canPopfromQ = True
-                            continue
-                        if(debug):
-                            print(dmsg)
-                    else:
-                        if(debug):
-                            print('msg failure! -> empty buffer')
-                        canPopfromQ = True
-                        continue
-                    if(debug):
-                        print('Pre-dmsg (if)', dmsg)
-                    if((dmsg.Command == DataMessages.CommandCodes.DataMessage.value) and 
-                       (dmsg.ObjectCount <= 10)):
-                        for i in range(dmsg.ObjectCount):
-                            dt, readPos, _ = self._readBytes(data, readPos, 8)
-                            msg = self.protocol.unpackDataObjectHeader(dt)
-                            if(msg is None):
-                                canPopfromQ = True
-                                continue
-                            try:
-                                 dobj:DataObjects.DataObjHeader = DataObjects.DataObjHeader._make(msg)
-                            except Exception:
-                                print('object header returned None!')
-                                time.sleep(3.0)
-                                exit(-99)  
-                                    
-                            curBf, readPos, readsz = self._readBytes(data, readPos, dobj.Length)
-                            if(dobj.Id == DataObjects.Ids.AcousticVideoData.value):
-                                #print('Got Acoustic-Video data')
-                                if(readsz == dobj.Length):
-                                    self._addQueue(self.acVidQ, curBf)
-                                else: # trigger subsequent reads if bytes insufficient
-                                    contRead = True
-                                    curId = dobj.Id
-                                    remainingLen = dobj.Length - readsz
-                                    if(debug):
-                                        print('AcVid: subsequent triggered. remaining: ', remainingLen)
-                                    break
-
-                            elif(dobj.Id == DataObjects.Ids.VideoData.value):
-                                #print('Got Video data')
-                                if(readsz == dobj.Length):
-                                    self._addQueue(self.vidQ, curBf)
-                                else: # trigger subsequent reads if bytes insufficient
-                                    contRead = True
-                                    curId = dobj.Id
-                                    remainingLen = dobj.Length - readsz
-                                    if(debug):
-                                        print('Vid: subsequent triggered. remaining: ', remainingLen)
-                                    break
-                            
-                            elif(dobj.Id == DataObjects.Ids.SpectrumData.value):
-                                #print('Got Spectrum data')
-                                if(readsz == dobj.Length):
-                                    self._addQueue(self.specQ, curBf)
-                                else: # trigger subsequent reads if bytes insufficient
-                                    contRead = True
-                                    curId = dobj.Id
-                                    remainingLen = dobj.Length - readsz
-                                    if(debug):
-                                        print('Spec: subsequent triggered. remaining: ', remainingLen)
-                                    break
-
-                            elif(dobj.Id == DataObjects.Ids.AudioData.value):
-                                #print('Got Audio data')
-                                if(readsz == dobj.Length):
-                                    self._addQueue(self.audQ, curBf)
-                                else: # trigger subsequent reads if bytes insufficient
-                                    contRead = True
-                                    curId = dobj.Id
-                                    remainingLen = dobj.Length - readsz
-                                    if(debug):
-                                        print('Audio: subsequent triggered. remaining: ', remainingLen)
-                                    break
-
-                            elif(dobj.Id == DataObjects.Ids.RawData.value):
-                                #print('Got Raw data')
-                                if(readsz == dobj.Length):
-                                    self._addQueue(rawQ, curBf)
-                                else: # trigger subsequent reads if bytes insufficient
-                                    contRead = True
-                                    curId = dobj.Id
-                                    remainingLen = dobj.Length - readsz
-                                    if(debug):
-                                        print('Raw: subsequent triggered. remaining: ', remainingLen)
-                                    break
-
-                            elif(dobj.Id == DataObjects.Ids.ThermalVideoData.value):
-                                #print('Got Thermal-Video data')
-                                if(readsz == dobj.Length):
-                                    self._addQueue(self.thermalQ, curBf)
-                                else: # trigger subsequent reads if bytes insufficient
-                                    contRead = True
-                                    curId = dobj.Id
-                                    remainingLen = dobj.Length - readsz
-                                    if(debug):
-                                        print('Thermal: subsequent triggered. remaining: ', remainingLen)
-                                    break
-                            
-                            elif(dobj.Id == DataObjects.Ids.CommonStatus.value):
-                                #print('Got CommonStatus data')
-                                if(readsz == dobj.Length): #TODO: update camera status
-                                    #print(data.read(dobj.Length))
-                                    pass
-                                else: # trigger subsequent reads if bytes insufficient
-                                    contRead = True
-                                    curId = dobj.Id
-                                    remainingLen = dobj.Length - readsz
-                                    if(debug):
-                                        print('CommonStatus: subsequent triggered. remaining: ', remainingLen)
-                                    break
-
-                            #check if inMsg still has stuff that can be read
-                            if((len(data) - readPos) > 0):
-                                canPopfromQ = False
-                            else: #proceed normally
-                                canPopfromQ = True
-                        
-                        #print('For loop break')
-                        canPrintLen = False
-                        isHdrPkt = False
-                        canPopfromQ = True
-                    else:
-                        #print('\nPacket discarded! - Size: ', len(inObj))
-                        res = self.getMatch(inObj)
-                        if(res):
-                            idx = res.span()[0] - 12
-                            #print(res, ' Hdr at: ', idx)
-                            readPos = idx
-                            canPopfromQ = False
-                        else:
-                            canPopfromQ = True
-            else:
-                pass
 
     '''Decodes and Publishes Video data'''
     def processVideo(self):
@@ -1055,36 +782,21 @@ class SoundCamConnector(object):
         acFrame = None
         while(self.processData.is_set()):
             try:
-                #print('Video Q size: ', q.qsize())
                 raw = self.vidQ.get(timeout=0.1)
                 if(raw is None):
                     continue
-                _, self.vidBW = self.protocol.unpackDecodeVideoData(raw)
-
-                # if(self.cfgObj['visualizeVideo']):
-                #     if(self.cfgObj['visualizeOverlay'] and not self.proc_acVidQ.empty()):
-                #         acFrame = self.proc_acVidQ.get()
-                #     self.visualizeBWVideo(decoded[1], acFrame=acFrame)
-                # else:
-                #     pass
-                #     # Update BW Queue
-                #     # if(not self.proc_vidBW.full()): #push data to Q
-                #     #     self.proc_vidBW.put(decoded[1])
-                #     # else:
-                #     #     self._clearQueue(self.proc_vidBW)
-                #     #     self.proc_vidBW.put(decoded[1])
-
-                #     # Update Overlay Queue
-                #     # if(not self.proc_acVidQ.empty()):
-                #     #     print('Got acoustic')
-                #     #     res = self.visualizeBWVideo(decoded[1], 
-                #     #             acFrame=self.proc_acVidQ.get(timeout=1.0), 
-                #     #             getResult=True)
-                #     #     if(not self.proc_vidOBW.full()): #push data to Q
-                #     #         self.proc_vidOBW.put(res)
-                #     #     else:
-                #     #         self._clearQueue(self.proc_vidOBW)
-                #     #         self.proc_vidOBW.put(res)
+                decoded = self.protocol.unpackDecodeVideoData(raw)
+                if(self.cfgObj['visualizeVideo']):
+                    if(self.cfgObj['visualizeOverlay'] and not self.proc_acVidQ.empty()):
+                        acFrame = self.proc_acVidQ.get()
+                    self.visualizeBWVideo(decoded[1], acFrame=acFrame)
+                else:
+                    # Update BW Queue
+                    if(not self.proc_vidBW.full()): #push data to Q
+                        self.proc_vidBW.put(decoded[1])
+                    else:
+                        self._clearQueue(self.proc_vidBW)
+                        self.proc_vidBW.put(decoded[1])
                 
                 hits += 1
                 if((time.time() - start_t >= 1.0) and self.debug):
@@ -1105,19 +817,23 @@ class SoundCamConnector(object):
         hits = 0
         while(self.processData.is_set()):
             try:
+                #print('Here 0', self.acVidQ.qsize())
                 raw = self.acVidQ.get(timeout=0.1)
                 if(raw is None):
                     continue
-                norm0_1 = self.scamUtils.updateAcousticBuffer(self.protocol.unpackDecodeAcousticVideoData(raw))
-                if(self.cfgObj['visualizeAcVideo']):
-                    self.visualizeACVideo(norm0_1)
-                self.vidAC = self.visualizeACVideo(norm0_1, getResult=True)
-                # if(res is not None):
-                #     if(not self.proc_acVidQ.full()): #push acoustic data to overlay_Q
-                #         self.proc_acVidQ.put(res)
-                #     else:
-                #         self._clearQueue(self.proc_acVidQ)
-                #         self.proc_acVidQ.put(res)
+                decoded = self.protocol.unpackDecodeAcousticVideoData(raw)
+                with self.ac_semaphore:
+                    norm0_1 = self.scamUtils.updateAcousticBuffer(decoded)
+                    if(self.cfgObj['visualizeAcVideo']):
+                        self.visualizeACVideo(norm0_1)
+
+                    res = self.visualizeACVideo(norm0_1, getResult=True)
+                    if(res is not None):
+                        if(not self.proc_acVidQ.full()): #push acoustic data to overlay_Q
+                            self.proc_acVidQ.put(res)
+                        else:
+                            self._clearQueue(self.proc_acVidQ)
+                            self.proc_acVidQ.put(res)
                 
                 hits += 1
                 if((time.time() - start_t >= 1.0) and self.debug):
@@ -1138,37 +854,29 @@ class SoundCamConnector(object):
         specData = []
         t = 30 #seconds
         record_t = time.time()
-        #spcQ: Queue = self.qDict[SoundCamConnector.DTypes.O_SPEC.name]
         hits = 0
         start_t = time.time()
-
-        # GUI
-        if(self.send_to_gui):
-            gui_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            gui_socket.connect((self.cfgObj['gui_hostname'], self.cfgObj['gui_port']))
         while(self.processData.is_set()):
             try:
-                self.spectrum = self.protocol.unpackDecodeSpectrumData(self.specQ.get(timeout=0.05))
-                if(self.spectrum is None):
+                raw = self.specQ.get(timeout=0.05)
+                if(raw is None):
+                    continue
+                decoded = self.protocol.unpackDecodeSpectrumData(raw)
+                if(decoded is None):
                     continue
                 with self.spec_semaphore:
-                    self.scamUtils.updateSpectrumBuffer(self.spectrum)
+                    self.scamUtils.updateSpectrumBuffer(decoded)
                     self.signalInfo = self.scamUtils.getSignalAnalysis()
-                
-                if(self.send_to_gui):
-                    message = 'This is a test message to GUI'
-                    gui_socket.sendall(message.encode('utf-8'))
                                        
-                #print('Spectrum:', decoded[0], ' ' ,decoded[1])
-                # if(not self.proc_specQ.full()): #push spectrum data to overlay_Q
-                #     self.proc_specQ.put(decoded)
-                # else:
-                #     self._clearQueue(self.proc_specQ)
-                #     self.proc_specQ.put(decoded)
+                if(not self.proc_specQ.full()): #push spectrum data to overlay_Q
+                    self.proc_specQ.put(decoded)
+                else:
+                    self._clearQueue(self.proc_specQ)
+                    self.proc_specQ.put(decoded)
                 if(saveSpectrum):
-                    specData.append(self.spectrum[2])
+                    specData.append(decoded[2])
                     if(time.time() - record_t >= t):
-                        sr = int(self.spectrum[0][1] * 1024 * 2) #nyquist
+                        sr = int(decoded[0][1] * 1024 * 2) #nyquist
                         print('saving spectrum with sampling frequency (Hz): ', sr)
                         # specData = np.concatenate(specData)
                         # self.scamUtils.writeAudio('outputSpec_mute.wav', specData, sr)
@@ -1185,8 +893,6 @@ class SoundCamConnector(object):
             except Exception as e:
                 print(f"Error in spectrum process {e}")
                 break
-        if(self.send_to_gui):
-            self.gui_socket.close()
 
     '''Decodes and Publishes Audio data'''
     def processAudio(self):
@@ -1206,19 +912,19 @@ class SoundCamConnector(object):
                 raw = self.audQ.get(timeout=0.1)
                 if(raw is None):
                     continue
-                self.audio = self.protocol.unpackDecodeAudioData(raw)
+                decoded = self.protocol.unpackDecodeAudioData(raw)
                 with self.aud_semaphore:
-                    self.scamUtils.updateAudioBuffer(self.audio) #update ringbuffer
-                # if(not self.proc_audQ.full()): #push audio data to overlay_Q
-                #     self.proc_audQ.put(decoded)
-                # else:
-                #     self._clearQueue(self.proc_audQ)
-                #     self.proc_audQ.put(decoded)
+                    self.scamUtils.updateAudioBuffer(decoded) #update ringbuffer
+                if(not self.proc_audQ.full()): #push audio data to overlay_Q
+                    self.proc_audQ.put(decoded)
+                else:
+                    self._clearQueue(self.proc_audQ)
+                    self.proc_audQ.put(decoded)
                 if(saveAudio):
-                    audioData_plus.append(self.audio[2])
-                    audioData_minus.append(self.audio[3])
+                    audioData_plus.append(decoded[2])
+                    audioData_minus.append(decoded[3])
                     if(time.time() - record_t >= t):
-                        sr = 1/ self.audio[1][0]
+                        sr = 1/ decoded[1][0]
                         print('\n--------------Saving audio with sampling frequency (Hz): ', sr)
                         audioData_plus = np.concatenate(audioData_plus)
                         audioData_minus = np.concatenate(audioData_minus)
@@ -1241,7 +947,7 @@ class SoundCamConnector(object):
 
 
     '''Decodes and Publishes Raw data'''
-    def publishRaw(self, q:Queue, canRun:multiprocessing.Event):
+    def publishRaw(self, q:Queue, canRun:Event):
         print('Starting raw data publisher (for debugging) ...')
         while(canRun.is_set()):
             pass
@@ -1249,7 +955,6 @@ class SoundCamConnector(object):
     '''Decodes and Publishes Thermal Video data'''
     def processThermalVideo(self):
         print('Starting thermal video processor ...')
-        #tmQ:Queue = self.qDict[SoundCamConnector.DTypes.O_THM.name]
         start_t = time.time()
         hits = 0
         while(self.processData.is_set()):
@@ -1261,12 +966,12 @@ class SoundCamConnector(object):
                 if(self.cfgObj['visualizeThermal']):
                     self.visualizeThermal(decoded[1])
                 else:
-                    self.vidTm = self.visualizeThermal(decoded[1], getResult=True)
-                    # if(not self.proc_thmQ.full()): #push data to Q
-                    #     self.proc_thmQ.put(res)
-                    # else:
-                    #     self._clearQueue(self.proc_thmQ)
-                    #     self.proc_thmQ.put(res)
+                    res = self.visualizeThermal(decoded[1], getResult=True)
+                    if(not self.proc_thmQ.full()): #push data to Q
+                        self.proc_thmQ.put(res)
+                    else:
+                        self._clearQueue(self.proc_thmQ)
+                        self.proc_thmQ.put(res)
                 
                 hits += 1
                 if((time.time() - start_t >= 1.0) and self.debug):
@@ -1279,7 +984,31 @@ class SoundCamConnector(object):
                 print(f"Error in process {e}")
                 break
     
-    def monitor_memory(self):
+    '''Decodes and Publishes Leakage rate data'''
+    def processLeakRate(self):
+        print('Starting leak rate processor ...')
+
+        start_t = time.time()
+        hits = 0
+        while(self.processData.is_set()):
+            try:
+                raw = self.leakRateQ.get(timeout=0.1)
+                if(raw is None):
+                    continue
+                self.leakRate = MDLeakRateData(**self.protocol.unpackDecodeLeakRateData(raw)._asdict())
+                print(f"\tLeakRate: {self.leakRate.LeakRate} \t\tStatus: {self.leakRate.State}")
+                hits += 1
+                if((time.time() - start_t >= 1.0) and self.debug):
+                    print('===============================================================LeakRate @ %i Hz' % hits)
+                    hits = 0
+                    start_t = time.time()
+            except Empty:
+                continue
+            except Exception as e:
+                print(f"Error in leak rate process {e}")
+                break
+    
+    def monitorMemory(self):
         process = psutil.Process(os.getpid())
         while(self.processData.is_set()):
             mem_info = process.memory_info()
@@ -1329,7 +1058,7 @@ class SoundCamConnector(object):
 
     
     '''Displays live AUDIO/SPECTRUM data'''
-    def displayLiveData(self, canRun:multiprocessing.Event):
+    def displayLiveData(self, canRun:Event):
         print('Starting visual display')
         #wait for data
         while(canRun.is_set()):
@@ -1427,7 +1156,7 @@ class SoundCamConnector(object):
             pass
         plt.close()
 
-    def displayProcess(self, canRun:multiprocessing.Event):
+    def displayProcess(self, canRun:Event):
         print('Starting display process')
         self.displayLiveData(canRun=canRun) #display audio/spectrum signal(s)
 
@@ -1485,15 +1214,12 @@ class SoundCamConnector(object):
 
     ''' Returns the BW Video frame '''
     def getBWVideo(self):
-        return self.vidBW
-    
-    # def getBWVideo(self):
-    #     try:
-    #         return self.proc_vidBW.get(timeout=0.1)
-    #     except Empty:
-    #         return None
-    #     except Exception:
-    #         return None
+        try:
+            return self.proc_vidBW.get(timeout=0.1)
+        except Empty:
+            return None
+        except Exception:
+            return None
     
     ''' Returns the Overlayed video frame '''
     def getOverlayVideo(self):
@@ -1697,8 +1423,6 @@ if __name__ == '__main__':
     camObj = SoundCamConnector(debug=True, cfgObj=cfgContext)
 
     signal.signal(signal.SIGINT, camObj.signal_handler)
-    #atexit.register(camObj.release_shared)
-    #atexit.register(camObj.disconnect)
 
     if(camObj.connect()):
         print('Sending Initial configuration and preparing state')
@@ -1706,9 +1430,6 @@ if __name__ == '__main__':
         while(not camObj.hasStatus()):
             pass
         print(camObj.getStatus(), '\n')
-
-    #camObj.restartCamera()
-    #time.sleep(3.0)
 
     camObj.startMeasurement()
     try:
