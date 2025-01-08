@@ -15,11 +15,11 @@ from soundcam_ros.msg import SoundcamStatus, SoundcamDetection, \
     Preset
 from soundcam_ros.srv import SoundcamService, SoundcamServiceRequest, \
     SoundcamServiceResponse
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, CameraInfo
 from diagnostic_msgs.msg import KeyValue
 import actionlib, threading, numpy as np
 from cv_bridge import CvBridge
-from soundcam_protocol import Features
+from soundcam_protocol import Features, Status, MDLeakRateData
 from utils_ROS import ROSLayerUtils, MissionData
 from utils import SignalInfo
 from datetime import datetime
@@ -69,8 +69,11 @@ class SoundcamROS(object):
         self.prevUUID = ''
         self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset')
         self.curPose = [0.0, 0.0, 90.0]
-        self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+
+        self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         
+        #static image caches
         self.overlayed_img = None
         self.bw_img = None
         self.ac_img = None
@@ -89,6 +92,7 @@ class SoundcamROS(object):
             self.detection_pub = rospy.Publisher(self.cfg['frame'] + '/detection', SoundcamDetection, queue_size=5)
             self.preset_pub = rospy.Publisher(self.cfg['frame'] + '/preset', Preset, queue_size=5)
             self.capture_pub = rospy.Publisher(self.cfg['capture_feedback_topic'], Bool, queue_size=1)
+            self.caminfo_pub = rospy.Publisher(self.cfg['frame'] + '/CameraInfo', CameraInfo, queue_size=1, latch=True)
             
             thread_grp = list()
             if(self.cfg['processVideo']):
@@ -127,19 +131,41 @@ class SoundcamROS(object):
                                         daemon=True))
             
             rospy.Subscriber(self.cfg['pose_topic'], Pose, self.subRobotPose)
-            
-            srvr = rospy.Service('SoundCameraServiceServer', SoundcamService, self.serviceCB)
+            rospy.Service('SoundCameraServiceServer', SoundcamService, self.serviceCB)
             self.act_srvr = actionlib.SimpleActionServer("SoundCameraActionServer", SoundcamAction, 
                                                       execute_cb=self.executeCB, auto_start=False)
             self.act_feedbk = SoundcamFeedback()
             self.act_result = SoundcamResult()
             self.act_srvr.start()
-            
+
+            #Send camera info
+            self.publishCameraInfo()
+
             for th in thread_grp:
                 th.start()
             rospy.loginfo("ROS Interfaces running ...")
         else:
             print("Using System Interfaces ...")
+    
+    def publishCameraInfo(self):
+        msg = CameraInfo()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = self.cfg['frame']
+        msg.width = 640
+        msg.height = 480
+        msg.distortion_model = 'plumb_bob'
+        msg.K = [425.0,    0. , 320.0,
+                0.  , 400.0, 240.0,
+                0.  ,    0. ,   1. ]
+        msg.D = [0.0, 0.0, 0.0, 0.0]
+        msg.R = [1., 0., 0.,
+                0., 1., 0.,
+                0., 0., 1.]
+        msg.P = [1., 0., 0., 0.,
+                0., 1., 0., 0.,
+                0., 0., 1., 0.]
+        
+        self.caminfo_pub.publish(msg)
     
     def disconnect(self):
         self.canRun.clear()
@@ -178,6 +204,9 @@ class SoundcamROS(object):
         featureObj:Features = meta['Features']
         for i,field in enumerate(featureObj._fields):
             msg.features.append(KeyValue(field, str(featureObj.__getitem__(i))))
+        statusObj:Status = meta['Status']
+        for i,field in enumerate(statusObj._fields):
+            msg.features.append(KeyValue(field, str(statusObj.__getitem__(i))))
         pub.publish(msg)
         if(self.debug):
             rospy.loginfo_throttle(3, 'SC| Sent status msg')
@@ -223,7 +252,7 @@ class SoundcamROS(object):
             rate.sleep()
     
     def audioPublishing(self, pub:rospy.Publisher, pubinfo:rospy.Publisher, fn, fninfo):
-        rate = rospy.Rate(100)
+        rate = rospy.Rate(40)
         msg = AudioDataStamped()
         msg.header.frame_id = self.cfg['frame']
         msginfo = AudioInfo()
@@ -265,7 +294,7 @@ class SoundcamROS(object):
             rate.sleep()
 
     def spectrumPublishing(self, pub:rospy.Publisher, fn):
-        rate = rospy.Rate(30)
+        rate = rospy.Rate(25)
         msg = Spectrum()
         msg.header.frame_id = self.cfg['frame']
         while(not rospy.is_shutdown() and self.canRun.is_set()):
@@ -286,12 +315,13 @@ class SoundcamROS(object):
             msg.header.frame_id = self.cfg['frame']
             msg.header.stamp = rospy.Time.now()
             msg.preset = self.curPreset
-            msg.meanEnergy.data = sigInfo.mean
+            msg.meanEnergy.data = sigInfo.mean_energy
             msg.stddev.data = sigInfo.std_dev
             msg.highEnergyThreshold.data = sigInfo.hi_thresh
-            msg.currentEnergy.data = sigInfo.current
+            msg.currentEnergy.data = sigInfo.current_energy
             msg.lowEnergyThreshold.data = sigInfo.lo_thresh
             msg.snr.data = sigInfo.snr
+            msg.acousticEnergy.data = sigInfo.acoustic_energy
             msg.preActivation.data = sigInfo.pre_activation
             msg.detection.data = sigInfo.detection
             msg.blobXY = blobCoords
@@ -335,11 +365,11 @@ class SoundcamROS(object):
                 
     def subRobotPose(self, msg:Pose):
         try:
-            orientation_eu = self.utils.quaternionToEulerDegrees(msg.orientation.w, 
+            orientation_euler = self.utils.quaternionToEulerDegrees(msg.orientation.w, 
                                                             msg.orientation.x,
                                                             msg.orientation.y,
                                                             msg.orientation.z)
-            self.curPose = [msg.position.x, msg.position.y, orientation_eu[2]]
+            self.curPose = [msg.position.x, msg.position.y, orientation_euler[2]]
         except Exception as e:
             rospy.logerr(e)
 
@@ -385,19 +415,10 @@ class SoundcamROS(object):
     def _takeSnapshot(self, streamType=SoundcamServiceRequest.OVERLAY_STREAM, 
                       wpInfo=None, sigInfo=None):
         isActPoint = True
-        if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
-            frame = self._getFrame(streamType=SoundcamServiceRequest.VIDEO_STREAM)
-            if(frame is None):
-                return False
-        elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
-            frame = self._getFrame(streamType=SoundcamServiceRequest.THERMAL_STREAM)
-            if(frame is None):
-                return False
-        elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
-            frame = self._getFrame(streamType=SoundcamServiceRequest.OVERLAY_STREAM)
-            if(frame is None):
-                return False
-        elif(streamType == SoundcamServiceRequest.ALL):
+        media = list()
+        frame_data = list()
+
+        if(streamType == SoundcamServiceRequest.ALL):
             try:
                 media = list()
                 frame_data = list()
@@ -421,6 +442,24 @@ class SoundcamROS(object):
                     media.append(fobj[1])
             except Exception as e:
                 rospy.logerr('SC| Error taking snapshots [ALL]: ', e)
+                return False
+        else: # selective image save
+            self.suffix = ''
+            self.frame = None
+            start_t = time.time()
+            elapsed = 10.0
+            
+        if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
+            frame = self._getFrame(streamType=SoundcamServiceRequest.VIDEO_STREAM)
+            if(frame is None):
+                return False
+        elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
+            frame = self._getFrame(streamType=SoundcamServiceRequest.THERMAL_STREAM)
+            if(frame is None):
+                return False
+        elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
+            frame = self._getFrame(streamType=SoundcamServiceRequest.OVERLAY_STREAM)
+            if(frame is None):
                 return False
         
         if(streamType != SoundcamServiceRequest.ALL): #for BW/THM/OV
