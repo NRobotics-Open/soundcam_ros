@@ -20,8 +20,9 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from soundcam_protocol import CommandCodes, DataMessages, MDDataMessage, Device, \
     DataObjects, CameraProtocol, MDLeakRateData, Status
-from threading import Thread, Semaphore, Event
+from threading import Thread, Semaphore, Event, Lock
 from queue import Empty, Queue
+from collections import deque
 import SharedArray as sa
 import psutil
 
@@ -109,8 +110,7 @@ class SoundCamConnector(object):
 
         #prepare queues
         self.threads = list()
-        self.queues = list()
-        self.qDict = dict()
+        self.dqueues = list()
 
         #media Q setup
         self.vidQ = None
@@ -121,18 +121,24 @@ class SoundCamConnector(object):
 
         #post-processing setup
         self.overlayBA = bitarray(self.cfgObj['overlayConfig'])
-        self.proc_vidBW = Queue(maxsize=3)
-        self.queues.append(self.proc_vidBW)
-        self.proc_vidOBW = Queue(maxsize=3)
-        self.queues.append(self.proc_vidOBW)
-        self.proc_acVidQ = Queue(maxsize=3)
-        self.queues.append(self.proc_acVidQ)
-        self.proc_specQ = Queue(maxsize=3)
-        self.queues.append(self.proc_specQ)
-        self.proc_audQ = Queue(maxsize=3)
-        self.queues.append(self.proc_audQ)
-        self.proc_thmQ = Queue(maxsize=3)
-        self.queues.append(self.proc_thmQ)
+        self.proc_vidBW = deque(maxlen=60)
+        self.proc_vidBW_lock = Lock()
+        self.dqueues.append(self.proc_vidBW)
+        self.proc_vidOBW = deque(maxlen=60)
+        self.proc_vidOBW_lock = Lock()
+        self.dqueues.append(self.proc_vidOBW)
+        self.proc_acVidQ = deque(maxlen=60)
+        self.proc_acVidQ_lock = Lock()
+        self.dqueues.append(self.proc_acVidQ)
+        self.proc_specQ = deque(maxlen=60)
+        self.proc_specQ_lock = Lock()
+        self.dqueues.append(self.proc_specQ)
+        self.proc_audQ = deque(maxlen=60)
+        self.proc_audQ_lock = Lock()
+        self.dqueues.append(self.proc_audQ)
+        self.proc_thmQ = deque(maxlen=60)
+        self.proc_thmQ_lock = Lock()
+        self.dqueues.append(self.proc_thmQ)
             
         if(not self.cfgObj['system_run']): #prevent any form of visualization if not system_run
             #self.cfgObj['visualizeOverlay'] = False
@@ -146,37 +152,42 @@ class SoundCamConnector(object):
         #     self.cfgObj['visualizeVideo'] = True
         
         if(self.cfgObj['processVideo']):
-            self.vidQ = Queue(maxsize=30)
-            self.queues.append(self.vidQ)
+            self.vidQ = deque(maxlen=30)
+            self.vidQ_lock = Lock()
+            self.dqueues.append(self.vidQ)
             self.threads.append(Thread(target=self.processVideo, daemon=True))
         if(self.cfgObj['processAcVideo']):
-            self.acVidQ = Queue(maxsize=30)
-            self.queues.append(self.acVidQ)
+            self.acVidQ = deque(maxlen=30)
+            self.acVidQ_lock = Lock()
+            self.dqueues.append(self.acVidQ)
             self.ac_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processAcVideo, daemon=True))
         if(self.cfgObj['processSpectrum']):
-            self.specQ = Queue(maxsize=30)
-            self.queues.append(self.specQ)
+            self.specQ = deque(maxlen=30)
+            self.specQ_lock = Lock()
+            self.dqueues.append(self.specQ)
             self.spec_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processSpectrum, daemon=True))
         if(self.cfgObj['processAudio']):
-            self.audQ = Queue(maxsize=30)
-            self.queues.append(self.audQ)
+            self.audQ = deque(maxlen=30)
+            self.audQ_lock = Lock()
+            self.dqueues.append(self.audQ)
             self.aud_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processAudio, daemon=True))
         if(self.cfgObj['processThermal']):
-            self.thermalQ = Queue(maxsize=30)
-            self.queues.append(self.thermalQ)
+            self.thermalQ = deque(maxlen=30)
+            self.thermalQ_lock = Lock()
+            self.dqueues.append(self.thermalQ)
             self.threads.append(Thread(target=self.processThermalVideo, daemon=True))
         
         if(self.cfgObj['dataToSend2'] > 0):
-            self.leakRateQ = Queue(maxsize=30)
-            self.queues.append(self.leakRateQ)
+            self.leakRateQ = deque(maxlen=30)
+            self.leakRateQ_lock = Lock()
+            self.dqueues.append(self.leakRateQ)
             self.threads.append(Thread(target=self.processLeakRate, daemon=True))
 
         # if(self.cfgObj.p_pubRaw):
         #     self.rawQ = Queue()
-        #     self.qDict[SoundCamConnector.DTypes.RAW.name] = self.rawQ
         #     self.threads.append(Thread(target=self.publishRaw, args=(self.rawQ, self.processData)))
         
         if(self.cfgObj['visualizeAudio'] or self.cfgObj['visualizeSpectrum']):
@@ -187,7 +198,7 @@ class SoundCamConnector(object):
         
         if(self.debug):# Start the memory monitor in the main process
             self.threads.append(Thread(target=self.monitorMemory, daemon=True))
-        self.threads.append(Thread(target=self.receiveCyclic3, daemon=True))
+        self.threads.append(Thread(target=self.receiveCyclic, daemon=True))
 
         #create sockets
         self._createSockets()
@@ -308,7 +319,7 @@ class SoundCamConnector(object):
                 devStatus = self.protocol.getDeviceStatus()
                 #print(f'Connected Device Status: {devStatus}')
                 if(devStatus['deviceIP'] != self.ip_addr):
-                    print(f'Warning IP Mismatch detected. Connecting to device on: {devStatus['deviceIP']}')
+                    print(f"Warning IP Mismatch detected. Connecting to device on: {devStatus['deviceIP']}")
                     self.ip_addr = devStatus['deviceIP']
                 if(devStatus['Status'].isListenerCreated == 1):
                     self.sock.connect((self.ip_addr, self.tcp_port))
@@ -353,7 +364,7 @@ class SoundCamConnector(object):
         self.protocol.setInitialStatus(False)
         #clear buffers
         self.scamUtils.resetBuffers()
-        for _,q in self.qDict.items():
+        for q in self.dqueues:
             self._clearQueue(q)
         return True
     
@@ -370,6 +381,11 @@ class SoundCamConnector(object):
                 q.put(data, block=False)
             except:
                 pass
+    
+    def _addDequeue(self, q:deque, data:bytes, l: Lock):
+        if(q is not None):
+            with l:
+                q.append(data)
 
     def disconnect(self):
         if(not self.processData.is_set()):
@@ -383,12 +399,14 @@ class SoundCamConnector(object):
                 plt.close()
                 self.stopMeasurement()
                 self.sock.close()
+                self.udp_sock.close()
+                self.udp_recv_sock.close()
+                self.socket_instances_singleton = False
             except Exception as ex:
                 print('Error closing connection: ', ex)
         try:
-            for _,q in self.qDict.items():
-                q.put(None)
-            
+            for q in self.dqueues:
+                q.clear()
             print('Joining threads ...')
             for th in self.threads:
                 if(th.is_alive()):
@@ -556,121 +574,9 @@ class SoundCamConnector(object):
             data += packet
         return data
 
-    def receiveCyclic2(self):
-        print('Cyclic[2] thread started ...')
-        start_t = time.time()
-        dstr_cmd_invkid = '<2B'
-        dstr_hdr = '<H2L'
-        gib_cnt = 0
-        raw_buffer = b''
-        while(self.processData.is_set() and self.canRun):
-            '''
-                Read the first 2 bytes (Command & Invoke Id)
-                    if Req/Data message:
-                        Read the next 4 bytes (Data Length)
-                    if Response message:
-                        Read the next 8 bytes (Error Code & Data Length)
-                
-                Read the corresponding data block & wrap in memoryview
-                Pass data id and block to function for immediate decoding
-                Repeat
-            '''
-            if(self.connected):
-                try:
-                    readable, _, _ = select.select([self.sock], [], [], 0.5)  # 2.0 is the timeout in seconds
-                    if(self.sock in readable):
-                        if(self.recvStream):
-                            self.hasStreamData = True
-                            res = self.sock.recv(2)
-                            cmd_obj = struct.unpack(dstr_cmd_invkid, res) #decode command & invoke id
-                            if(cmd_obj[0] == DataMessages.CommandCodes.DataMessage.value):
-                                #print('Stub 1')
-                                res_ext = self.sock.recv(10)
-                                _, datalen, objcnt = struct.unpack(dstr_hdr, res_ext)
-                                res += res_ext
-                                raw_buffer += res
-                                print('DataMessage | InvokeId', cmd_obj, ' | Len: ',datalen, ' Cnt: ', objcnt, '\n', res.hex())
-                                if(objcnt > 1):
-                                    print('DataMessage contains multiple objects')
-                                    pass
-                                #   exit(-9)
-                                hdr = self.sock.recv(8)
-                                raw_buffer += hdr
-                                objhdr = self.protocol.unpackDataObjectHeader(hdr)
-                                print('Got object with Header ->',hdr.hex(),  '| (Type: %i, Version: %i, Length: %i) ' % objhdr)
-                                #Reading Data object
-                                datablock = self.recv_all(objhdr[2])
-                                dblocklen = len(datablock)
-                                if(dblocklen != objhdr[2]):
-                                    print('Data read length mismatch: missing bytes = ', (objhdr[2] - dblocklen))
-                                raw_buffer += datablock
-                                if(objhdr[0] == DataObjects.Ids.VideoData.value): #video
-                                    print(datablock[-1024:].hex())
-                                    print('block read success!\n\n')
-                                    pass
-                                elif(objhdr[0] == DataObjects.Ids.AcousticVideoData.value): #acoustic video
-                                    print(datablock[-1024:].hex())
-                                    print('block read success!\n')
-                                    pass
-                                elif(objhdr[0] == DataObjects.Ids.SpectrumData.value): #spectrum
-                                    print(datablock[-1024:].hex())
-                                    print('block read success!\n')
-                                    pass
-                                elif(objhdr[0] == DataObjects.Ids.AudioData.value): #audio
-                                    print(datablock[-1024:].hex())
-                                    print('block read success!\n')
-                                    pass
-                                elif(objhdr[0] == DataObjects.Ids.ThermalVideoData.value): #thermal video
-                                    print(datablock[-1024:].hex())
-                                    print('block read success!\n')
-                                    pass
-                                elif(objhdr[0] == DataObjects.Ids.CommonStatus.value): #common status
-                                    print(datablock[-1024:].hex())
-                                    print('block read success!\n')
-                                    pass
-                                else: #raw probably data
-                                    # print(res, ' | ',cmd_obj)
-                                    # print('Got Raw block ---')
-                                    #print(datablock.hex())
-                                    print('block read failure!\n')
-                                    #print(raw_buffer.hex())
-                                    raw_buffer = b''
-                                    gib_cnt += 1
-                                    if(gib_cnt >= 10):
-                                        break
 
-                            elif((cmd_obj[0] == CommandCodes.PrepareStateRes.value) or 
-                                 (cmd_obj[0] == CommandCodes.FinishStateRes.value) or 
-                                 (cmd_obj[0] == CommandCodes.StartProcedureRes.value) or 
-                                 (cmd_obj[0] == CommandCodes.WriteDataObjectRes.value) or 
-                                 (cmd_obj[0] == CommandCodes.StopProcedureRes.value) or 
-                                 (cmd_obj[0] == CommandCodes.ResetRes.value)):
-                                res = self.sock.recv(10)
-                                hdr_obj = struct.unpack(dstr_hdr, res)
-                                #print(res, ' | ',hdr_obj)
-                            
-                        else: #if not streaming
-                            try: #TODO: revisit this in the future
-                                res = self.sock.recv(self.bufSize)
-                                self.protocol.unpackDecodeResponse(response=res)
-                            except Exception as ex:
-                                print('\nError Unpacking and Decoding ...')
-
-                    now = time.time()
-                    
-                    if((now - start_t) >= 10.0 and self.connected and self.debug):
-                        print('Cyclic loop running ...')
-                        start_t = time.time()
-                except Exception:
-                    pass
-            else:
-                #print('Awaiting socket connnection ...')
-                time.sleep(0.1)
-        exit(-9)
-
-
-    def receiveCyclic3(self):
-        print('Cyclic[3] thread started ...')
+    def receiveCyclic(self):
+        print('Cyclic thread started ...')
         start_t = time.time()
         dstr_cmd_invkid = '<2B'
         dstr_hdr = '<H2L'
@@ -717,21 +623,21 @@ class SoundCamConnector(object):
                             
                             #raw_buffer += datablock
                             if(objhdr[0] == DataObjects.Ids.VideoData.value): #video
-                                self._addQueue(self.vidQ, datablock)
+                                self._addDequeue(self.vidQ, datablock, self.vidQ_lock)
                             elif(objhdr[0] == DataObjects.Ids.AcousticVideoData.value): #acoustic video
-                                self._addQueue(self.acVidQ, datablock)
+                                self._addDequeue(self.acVidQ, datablock, self.acVidQ_lock)
                             elif(objhdr[0] == DataObjects.Ids.SpectrumData.value): #spectrum
-                                self._addQueue(self.specQ, datablock)
+                                self._addDequeue(self.specQ, datablock, self.specQ_lock)
                             elif(objhdr[0] == DataObjects.Ids.AudioData.value): #audio
-                                self._addQueue(self.audQ, datablock)
+                                self._addDequeue(self.audQ, datablock, self.audQ_lock)
                             elif(objhdr[0] == DataObjects.Ids.ThermalVideoData.value): #thermal video
-                                self._addQueue(self.thermalQ, datablock)
+                                self._addDequeue(self.thermalQ, datablock, self.thermalQ_lock)
                             elif(objhdr[0] == DataObjects.Ids.CommonStatus.value): #common status
                                 #TODO: call function to decode
                                 pass
                             elif(objhdr[0] == DataObjects.Ids.LeakRate.value):
                                 print('Got Leakage data', datablock)
-                                self._addQueue(self.leakRateQ, datablock)
+                                self._addDequeue(self.leakRateQ, datablock, self.leakRateQ_lock)
                             else: #raw probably data
                                 # print(res, ' | ',cmd_obj)
                                 # print('Got Raw block ---')
@@ -782,29 +688,27 @@ class SoundCamConnector(object):
         acFrame = None
         while(self.processData.is_set()):
             try:
-                raw = self.vidQ.get(timeout=0.1)
-                if(raw is None):
+                try:
+                    with self.vidQ_lock:
+                        raw = self.vidQ.popleft()
+                except IndexError:
+                    time.sleep(0.01)
                     continue
                 decoded = self.protocol.unpackDecodeVideoData(raw)
                 if(self.cfgObj['visualizeVideo']):
-                    if(self.cfgObj['visualizeOverlay'] and not self.proc_acVidQ.empty()):
-                        acFrame = self.proc_acVidQ.get()
+                    if(self.cfgObj['visualizeOverlay']):
+                        with self.proc_acVidQ_lock:
+                            acFrame = self.proc_acVidQ.popleft()
                     self.visualizeBWVideo(decoded[1], acFrame=acFrame)
                 else:
-                    # Update BW Queue
-                    if(not self.proc_vidBW.full()): #push data to Q
-                        self.proc_vidBW.put(decoded[1])
-                    else:
-                        self._clearQueue(self.proc_vidBW)
-                        self.proc_vidBW.put(decoded[1])
-                
+                    with self.proc_vidBW_lock:
+                        self.proc_vidBW.append(decoded[1])
+
                 hits += 1
                 if((time.time() - start_t >= 1.0) and self.debug):
                     print('==================================================================Vid @ %i Hz' % hits)
                     hits = 0
                     start_t = time.time()
-            except Empty:
-                continue
             except Exception as e:
                 print(f"Error in video process {e}")
                 break
@@ -817,9 +721,11 @@ class SoundCamConnector(object):
         hits = 0
         while(self.processData.is_set()):
             try:
-                #print('Here 0', self.acVidQ.qsize())
-                raw = self.acVidQ.get(timeout=0.1)
-                if(raw is None):
+                try:
+                    with self.acVidQ_lock:
+                        raw = self.acVidQ.popleft()
+                except IndexError:
+                    time.sleep(0.01)
                     continue
                 decoded = self.protocol.unpackDecodeAcousticVideoData(raw)
                 with self.ac_semaphore:
@@ -829,19 +735,14 @@ class SoundCamConnector(object):
 
                     res = self.visualizeACVideo(norm0_1, getResult=True)
                     if(res is not None):
-                        if(not self.proc_acVidQ.full()): #push acoustic data to overlay_Q
-                            self.proc_acVidQ.put(res)
-                        else:
-                            self._clearQueue(self.proc_acVidQ)
-                            self.proc_acVidQ.put(res)
+                        with self.proc_acVidQ_lock:
+                            self.proc_acVidQ.append(res)
                 
                 hits += 1
                 if((time.time() - start_t >= 1.0) and self.debug):
                     print('===============================================================AcousticVid @ %i Hz' % hits)
                     hits = 0
                     start_t = time.time()
-            except Empty:
-                continue
             except Exception as e:
                 print(f"Error in acoustic process {e}")
                 break
@@ -858,8 +759,11 @@ class SoundCamConnector(object):
         start_t = time.time()
         while(self.processData.is_set()):
             try:
-                raw = self.specQ.get(timeout=0.05)
-                if(raw is None):
+                try:
+                    with self.specQ_lock:
+                        raw = self.specQ.popleft()
+                except IndexError:
+                    time.sleep(0.01)
                     continue
                 decoded = self.protocol.unpackDecodeSpectrumData(raw)
                 if(decoded is None):
@@ -867,12 +771,8 @@ class SoundCamConnector(object):
                 with self.spec_semaphore:
                     self.scamUtils.updateSpectrumBuffer(decoded)
                     self.signalInfo = self.scamUtils.getSignalAnalysis()
-                                       
-                if(not self.proc_specQ.full()): #push spectrum data to overlay_Q
-                    self.proc_specQ.put(decoded)
-                else:
-                    self._clearQueue(self.proc_specQ)
-                    self.proc_specQ.put(decoded)
+                with self.proc_specQ_lock:
+                    self.proc_specQ.append(decoded)         
                 if(saveSpectrum):
                     specData.append(decoded[2])
                     if(time.time() - record_t >= t):
@@ -888,8 +788,6 @@ class SoundCamConnector(object):
                     print('===============================================================Spectrum @ %i Hz' % hits)
                     hits = 0
                     start_t = time.time()
-            except Empty:
-                continue
             except Exception as e:
                 print(f"Error in spectrum process {e}")
                 break
@@ -903,23 +801,21 @@ class SoundCamConnector(object):
         audioData_minus = []
         t = 30 #seconds
         record_t = time.time()
-
-        #audQ:Queue = self.qDict[SoundCamConnector.DTypes.O_AUD.name]
         start_t = time.time()
         hits = 0
         while(self.processData.is_set()):
             try:
-                raw = self.audQ.get(timeout=0.1)
-                if(raw is None):
+                try:
+                    with self.audQ_lock:
+                        raw = self.audQ.popleft()
+                except IndexError:
+                    time.sleep(0.01)
                     continue
                 decoded = self.protocol.unpackDecodeAudioData(raw)
                 with self.aud_semaphore:
                     self.scamUtils.updateAudioBuffer(decoded) #update ringbuffer
-                if(not self.proc_audQ.full()): #push audio data to overlay_Q
-                    self.proc_audQ.put(decoded)
-                else:
-                    self._clearQueue(self.proc_audQ)
-                    self.proc_audQ.put(decoded)
+                with self.proc_audQ_lock:
+                    self.proc_audQ.append(decoded)
                 if(saveAudio):
                     audioData_plus.append(decoded[2])
                     audioData_minus.append(decoded[3])
@@ -939,8 +835,6 @@ class SoundCamConnector(object):
                     print('================================================================Audio @ %i Hz' % hits)
                     hits = 0
                     start_t = time.time()
-            except Empty:
-                continue
             except Exception as e:
                 print(f"Error in process {e}")
                 break
@@ -959,27 +853,25 @@ class SoundCamConnector(object):
         hits = 0
         while(self.processData.is_set()):
             try:
-                raw = self.thermalQ.get(timeout=0.1)
-                if(raw is None):
+                try:
+                    with self.thermalQ_lock:
+                        raw = self.thermalQ.popleft()
+                except IndexError:
+                    time.sleep(0.01)
                     continue
                 decoded = self.protocol.unpackDecodeThermalVideoData(raw)
                 if(self.cfgObj['visualizeThermal']):
                     self.visualizeThermal(decoded[1])
                 else:
                     res = self.visualizeThermal(decoded[1], getResult=True)
-                    if(not self.proc_thmQ.full()): #push data to Q
-                        self.proc_thmQ.put(res)
-                    else:
-                        self._clearQueue(self.proc_thmQ)
-                        self.proc_thmQ.put(res)
+                    with self.proc_thmQ_lock:
+                        self.proc_thmQ.append(res)
                 
                 hits += 1
                 if((time.time() - start_t >= 1.0) and self.debug):
                     print('================================================================Thermal @ %i Hz' % hits)
                     hits = 0
                     start_t = time.time()
-            except Empty:
-                continue
             except Exception as e:
                 print(f"Error in process {e}")
                 break
@@ -992,8 +884,11 @@ class SoundCamConnector(object):
         hits = 0
         while(self.processData.is_set()):
             try:
-                raw = self.leakRateQ.get(timeout=0.1)
-                if(raw is None):
+                try:
+                    with self.leakRateQ_lock:
+                        raw = self.leakRateQ.popleft()
+                except IndexError:
+                    time.sleep(0.01)
                     continue
                 self.leakRate = MDLeakRateData(**self.protocol.unpackDecodeLeakRateData(raw)._asdict())
                 print(f"\tLeakRate: {self.leakRate.LeakRate} \t\tStatus: {self.leakRate.State}")
@@ -1002,8 +897,6 @@ class SoundCamConnector(object):
                     print('===============================================================LeakRate @ %i Hz' % hits)
                     hits = 0
                     start_t = time.time()
-            except Empty:
-                continue
             except Exception as e:
                 print(f"Error in leak rate process {e}")
                 break
@@ -1019,14 +912,15 @@ class SoundCamConnector(object):
     def plotUpdater(self, frame):
         if(self.cfgObj['visualizeAudio']):
             try:
-                data = self.proc_audQ.get(timeout=0.1)
-                if(data is not None):
-                    audio = data[2] + data[3]
-                    lims = np.max(audio) + 20000 # plus buffer range
-                    self.ax[0].set_ylim(top=lims, bottom=-lims)
-                    self.plotLines[0].set_ydata(audio)
-            except Empty:
-                pass
+                with self.proc_audQ_lock:
+                    data = self.proc_audQ.popleft()
+                    if(data is not None):
+                        audio = data[2] + data[3]
+                        lims = np.max(audio) + 20000 # plus buffer range
+                        self.ax[0].set_ylim(top=lims, bottom=-lims)
+                        self.plotLines[0].set_ydata(audio)
+            except IndexError:
+                time.sleep(0.01)
         
         if(self.cfgObj['visualizeAcVideo']):
             self.plotLines[3].set_ydata(self.acousticBuffer)
@@ -1044,14 +938,15 @@ class SoundCamConnector(object):
         
         if(self.cfgObj['visualizeSpectrum']):
             try:
-                data = self.proc_specQ.get(timeout=0.1)
-                if(data is not None):
-                    self.plotLines[1].set_ydata(data[2]) #global
-                    self.plotLines[2].set_ydata(data[3]) #local
-                    # spectogram plotting
-                    self.ax_img = self.scamUtils.updateSpectogramPlot()
-            except Empty:
-                pass
+                with self.proc_specQ_lock:
+                    data = self.proc_specQ.popleft()
+                    if(data is not None):
+                        self.plotLines[1].set_ydata(data[2]) #global
+                        self.plotLines[2].set_ydata(data[3]) #local
+                        # spectogram plotting
+                        self.ax_img = self.scamUtils.updateSpectogramPlot()
+            except IndexError:
+                time.sleep(0.01)
             return self.plotLines, self.ax_img
         return self.plotLines
     
@@ -1210,13 +1105,20 @@ class SoundCamConnector(object):
     
     ''' Return camera alive status '''
     def isAlive(self):
-        return self.is_alive
+        self.AKAMsAssemble()
+        if(not self.AKAMsAssemble()):
+            return False
+        return (self.is_alive and 
+                (self.protocol.getDeviceStatus()['Status'].isConnectedHost == 1) and 
+                (self.protocol.getDeviceStatus()['Status'].isTransferActive == 1))
 
     ''' Returns the BW Video frame '''
     def getBWVideo(self):
         try:
-            return self.proc_vidBW.get(timeout=0.1)
-        except Empty:
+            with self.proc_vidBW_lock:
+                return self.proc_vidBW.popleft()
+        except IndexError:
+            time.sleep(0.01)
             return None
         except Exception:
             return None
@@ -1224,35 +1126,35 @@ class SoundCamConnector(object):
     ''' Returns the Overlayed video frame '''
     def getOverlayVideo(self):
         try:
-            return self.proc_vidOBW.get(timeout=0.1)
-        except Empty:
+            with self.proc_vidOBW_lock:
+                return self.proc_vidOBW.popleft()
+        except IndexError:
+            time.sleep(0.01)
             return None
         except Exception:
             return None
     
     ''' Returns the Acoustic Video frame '''
     def getACVideo(self):
-        return self.vidAC
-    
-    # def getACVideo(self):
-    #     try:
-    #         return self.proc_acVidQ.get(timeout=0.1)
-    #     except Empty:
-    #         return None
-    #     except Exception:
-    #         return None
+        try:
+            with self.proc_acVidQ_lock:
+                return self.proc_acVidQ.popleft()
+        except IndexError:
+            time.sleep(0.01)
+            return None
+        except Exception:
+            return None
     
     ''' Returns the Thermal Video frame '''
     def getTMVideo(self):
-        return self.vidTm
-    
-    # def getTMVideo(self):
-    #     try:
-    #         return self.proc_thmQ.get(timeout=0.1)
-    #     except Empty:
-    #         return None
-    #     except Exception:
-    #         return None
+        try:
+            with self.proc_thmQ_lock:
+                return self.proc_thmQ.popleft()
+        except IndexError:
+            time.sleep(0.01)
+            return None
+        except Exception:
+            return None
     
     ''' Returns the Audio frame '''
     def getAudio(self):
@@ -1262,36 +1164,24 @@ class SoundCamConnector(object):
     ''' Returns the Audio Info '''
     def getAudioInfo(self):
         try:
-            if(self.audio is not None):
-                meta:DataObjects.MDAudioData2 = DataObjects.MDAudioData2._make(self.audio[1])
-                srate = int(1/meta.dt)
-                return dict({'channels': 1,
-                            'sample_rate': srate,
-                            'bitrate': 16 * srate})
-        except Empty:
+            with self.proc_audQ_lock:
+                decoded = self.proc_audQ.popleft()
+                if(decoded is not None):
+                    meta:DataObjects.MDAudioData2 = DataObjects.MDAudioData2._make(decoded[1])
+                    srate = int(1/meta.dt)
+                    return dict({'channels': 1,
+                                'sample_rate': srate,
+                                'bitrate': 16 * srate})
+        except IndexError:
+            time.sleep(0.01)
             return None
         except Exception:
             return None
-
-    # def getAudioInfo(self):
-    #     try:
-    #         decoded = self.proc_audQ.get(timeout=0.1)
-    #         if(decoded is not None):
-    #             meta:DataObjects.MDAudioData2 = DataObjects.MDAudioData2._make(decoded[1])
-    #             srate = int(1/meta.dt)
-    #             return dict({'channels': 1,
-    #                         'sample_rate': srate,
-    #                         'bitrate': 16 * srate})
-    #     except Empty:
-    #         return None
-    #     except Exception:
-    #         return None
     
     ''' Returns the Spectrum frame '''
     def getSpectrum(self):
         with self.spec_semaphore:
-            return (self.scamUtils.p_getFrequencies(), 
-                    self.scamUtils.getSpectrumBuffer()[-self.scamUtils.energy_sz:])
+            return (self.scamUtils.p_getFrequencies(), self.scamUtils.getSpectrumBuffer()[-1023:])
     
     ''' Returns the current blob data '''
     def getBlobData(self):
@@ -1316,6 +1206,9 @@ class SoundCamConnector(object):
     
     def isContinuousStream(self):
         return self.hasStreamData
+    
+    def isDetectionReady(self):
+        return self.scamUtils.isReady
 
     '''
     --------------------------------------------------------------------VISUALIZATION METHODS
