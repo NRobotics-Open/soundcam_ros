@@ -33,6 +33,7 @@ class ROSLayerUtils(object):
                                          ('leak_rate', float),
                                          ('presetName', str), ('maximumFrequency', int), ('minimumFrequency', int),
                                          ('distance', float), ('crest', float), ('dynamic', float), ('maximum', float)])
+    TileInfo = NamedTuple('TileInfo', [('id', int), ('relId', int)])
     def __init__(self, debug=False) -> None:
         self.mediaDir = os.path.expanduser("~") + '/current'
         if(not os.path.exists(self.mediaDir)):

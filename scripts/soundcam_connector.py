@@ -352,21 +352,43 @@ class SoundCamConnector(object):
 
     '''Sends command to reset the camera'''
     def restartCamera(self):
+        print('Restarting device...')
         #disable cyclic loop
         self.recvStream = False
-        self.connected = False
         self.is_alive = False
         #send reset command
         query = self.protocol.generateReadRequest(command=CommandCodes.ResetReq, 
                                                   invokeId=self.invokeId)
         self.sendData(query=query)
+        self.disconnect()
         #disable initial status flag
         self.protocol.setInitialStatus(False)
         #clear buffers
         self.scamUtils.resetBuffers()
         for q in self.dqueues:
-            self._clearQueue(q)
-        return True
+            q.clear()
+
+        #re-connect camera
+        start_t = time.time()
+        max_t = 40 #seconds
+        connState = False
+        result = False
+        while(not result):
+            print('Waiting for device to be ready ...')
+            if(self.pingCamera(self.ip_addr)):
+                if(not connState):
+                    connState = self.connect()
+                else:
+                    self.initialConfigure()
+                    while(not self.hasStatus()):
+                        pass
+                    self.startMeasurement()
+                    result = True
+                    break
+            if((time.time() - start_t) >= max_t):
+                break
+            time.sleep(1.0)
+        return result
     
     def _clearQueue(self, q:Queue):
         while(not q.empty()):
@@ -388,19 +410,23 @@ class SoundCamConnector(object):
                 q.append(data)
 
     def disconnect(self):
+        self.stopMeasurement()
+        self.sock.close()
+        self.udp_sock.close()
+        self.udp_recv_sock.close()
+        self.connected = False
+        print('Disconnected!')
+
+    def terminate(self):
         if(not self.processData.is_set()):
             return
-        
         self.canRun = False
         self.processData.clear()
         if(self.connected):
             try:
                 cv2.destroyAllWindows()
                 plt.close()
-                self.stopMeasurement()
-                self.sock.close()
-                self.udp_sock.close()
-                self.udp_recv_sock.close()
+                self.disconnect()
                 self.socket_instances_singleton = False
             except Exception as ex:
                 print('Error closing connection: ', ex)
@@ -426,7 +452,7 @@ class SoundCamConnector(object):
 
     def signal_handler(self, sig, frame):
         print("Signal received, shutting down...")
-        self.disconnect()
+        self.terminate()
         self.release_shared()
         exit(0)
 
@@ -1330,4 +1356,4 @@ if __name__ == '__main__':
             time.sleep(0.001)
     except KeyboardInterrupt:
         print("Stopping all processes...")
-        camObj.disconnect()
+        camObj.terminate()

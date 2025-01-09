@@ -25,7 +25,7 @@ from utils import SignalInfo
 from datetime import datetime
 import cv2
 import pyfakewebcam as pf
-from threading import Event
+from threading import Event, Thread, Lock
 
 class SoundcamROS(object):
     def __init__(self) -> None:
@@ -72,12 +72,26 @@ class SoundcamROS(object):
 
         self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.tileInfo:ROSLayerUtils.TileInfo = ROSLayerUtils.TileInfo(0, 0)
+        self.signalLock = Lock()
+        self.tileLock = Lock()
+        self.runCmp = Event()
+        self.runCmp.clear()
         
         #static image caches
         self.overlayed_img = None
         self.bw_img = None
         self.ac_img = None
         self.thm_img = None
+
+        #operational threads
+        self.trigger_reset = False
+        self.threads = list()
+        self.threads.append(Thread(target=self.restartCamera, daemon=True))
+        self.threads.append(Thread(target=self.captureDetections, daemon=True))
+        #start threads
+        for th in self.threads:
+            th.start()
 
     def bringUpInterfaces(self):
         rospy.loginfo('Bringing up interfaces ...')
@@ -352,6 +366,14 @@ class SoundcamROS(object):
     '''
     -------------------------other METHODS
     '''
+    def restartCamera(self):
+        while(self.canRun.is_set()):
+            if(self.trigger_reset):
+                if(self.camera.restartCamera()):
+                    self.setPreset(self.curPreset) #reset preset
+                self.trigger_reset = False
+            time.sleep(1.0)
+    
     def setPreset(self, preset:Preset):
         if(preset.presetName == self.curPreset.presetName):
             return True
@@ -413,29 +435,36 @@ class SoundcamROS(object):
         6 -> [BW Image, Thermal Image, Overlayed Image]
     '''
     def _takeSnapshot(self, streamType=SoundcamServiceRequest.OVERLAY_STREAM, 
-                      wpInfo=None, sigInfo=None):
+                      wpInfo:ROSLayerUtils.WaypointInfo=None, sigInfo:SignalInfo=None, 
+                      tileInfo:ROSLayerUtils.TileInfo=None):
         isActPoint = True
         media = list()
         frame_data = list()
+        if(tileInfo is None):
+            tileInfo = ROSLayerUtils.TileInfo(0, 0)
 
         if(streamType == SoundcamServiceRequest.ALL):
             try:
-                media = list()
-                frame_data = list()
-                filename = self.utils.getUniqueName(suffix='BW')
+                sfx = ''.join(['BW_', str(tileInfo.id)])
+                filename = self.utils.getUniqueName(suffix=sfx)
                 frame = self._getFrame(streamType=SoundcamServiceRequest.VIDEO_STREAM)
                 if(frame is not None):
                     frame_data.append((frame, filename))
 
-                filename = self.utils.getUniqueName(suffix='THM')
+                sfx = ''.join(['THM_', str(tileInfo.id)])
+                filename = self.utils.getUniqueName(suffix=sfx)
                 frame = self._getFrame(streamType=SoundcamServiceRequest.THERMAL_STREAM)
                 if(frame is not None):
                     frame_data.append((frame, filename))
 
-                filename = self.utils.getUniqueName(suffix='OV')
+                sfx = ''.join(['OV_', str(tileInfo.id)])
+                filename = self.utils.getUniqueName(suffix=sfx)
                 frame = self._getFrame(streamType=SoundcamServiceRequest.OVERLAY_STREAM)
                 if(frame is not None):
                     frame_data.append((frame, filename))
+                
+                if(len(frame_data) == 0):
+                    return False
                 
                 for fobj in frame_data: #write snapshots
                     self.utils.createSnapshotFromFrame(fobj[0], filename=fobj[1])
@@ -444,35 +473,64 @@ class SoundcamROS(object):
                 rospy.logerr('SC| Error taking snapshots [ALL]: ', e)
                 return False
         else: # selective image save
-            self.suffix = ''
-            self.frame = None
-            start_t = time.time()
-            elapsed = 10.0
-            
-        if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
-            frame = self._getFrame(streamType=SoundcamServiceRequest.VIDEO_STREAM)
-            if(frame is None):
-                return False
-        elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
-            frame = self._getFrame(streamType=SoundcamServiceRequest.THERMAL_STREAM)
-            if(frame is None):
-                return False
-        elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
-            frame = self._getFrame(streamType=SoundcamServiceRequest.OVERLAY_STREAM)
-            if(frame is None):
-                return False
-        
-        if(streamType != SoundcamServiceRequest.ALL): #for BW/THM/OV
-            try:
-                if(wpInfo is not None):
-                    filename=self.utils.getUniqueName()
-                    self.utils.createSnapshotFromFrame(frame, filename=filename)
-                    media.append(filename)
-                else:
-                    self.utils.createSnapshotFromFrame(frame)
-            except Exception as e:
-                rospy.logerr('SC| Error taking BW/THM/OV snapshot: ', e)
-                return False
+            if (isinstance(streamType, list)): #if streamType is a list
+                def _streamTypeIter(strmLs:list, mediaLs:list, tile:ROSLayerUtils.TileInfo):
+                    for stream in strmLs:
+                        if(stream == SoundcamServiceRequest.VIDEO_STREAM):
+                            frame = self._getFrame(streamType=SoundcamServiceRequest.VIDEO_STREAM)
+                            if(frame is not None):
+                                sfx = ''.join(['BW_', str(tileInfo.id)])
+                                filename = self.utils.getUniqueName(suffix=sfx)
+                                frame_data.append((frame, filename))
+                        elif(stream == SoundcamServiceRequest.THERMAL_STREAM):
+                            frame = self._getFrame(streamType=SoundcamServiceRequest.THERMAL_STREAM)
+                            if(frame is not None):
+                                sfx = ''.join(['THM_', str(tileInfo.id)])
+                                filename = self.utils.getUniqueName(suffix=sfx)
+                                frame_data.append((frame, filename))
+                        elif(stream == SoundcamServiceRequest.OVERLAY_STREAM):
+                            frame = self._getFrame(streamType=SoundcamServiceRequest.OVERLAY_STREAM)
+                            if(frame is not None):
+                                sfx = ''.join(['OV_', str(tileInfo.id)])
+                                filename = self.utils.getUniqueName(suffix=sfx)
+                                frame_data.append((frame, filename))
+                        
+                        if(len(frame_data) == 0):
+                            return False
+                        for fobj in frame_data: #write snapshots
+                            self.utils.createSnapshotFromFrame(fobj[0], filename=fobj[1])
+                            mediaLs.append(fobj[1])
+                try:
+                    _streamTypeIter(streamType, mediaLs=media, tile=tileInfo)
+                except Exception as e:
+                    rospy.logerr('SC| Error taking snapshots [List]: ', e)
+                    return False
+            else: # if streamType is a single type
+                try:
+                    if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
+                        frame = self._getFrame(streamType=SoundcamServiceRequest.VIDEO_STREAM)
+                        if(frame is None):
+                            return False
+                        else:
+                            sfx = ''.join(['BW_', str(tileInfo.id)])
+                            filename = self.utils.getUniqueName(suffix=sfx)
+                    elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
+                        frame = self._getFrame(streamType=SoundcamServiceRequest.THERMAL_STREAM)
+                        if(frame is None):
+                            return False
+                        else:
+                            sfx = ''.join(['THM_', str(tileInfo.id)])
+                            filename = self.utils.getUniqueName(suffix=sfx)
+                    elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
+                        frame = self._getFrame(streamType=SoundcamServiceRequest.OVERLAY_STREAM)
+                        if(frame is None):
+                            return False
+                        else:
+                            sfx = ''.join(['OV_', str(tileInfo.id)])
+                            filename = self.utils.getUniqueName(suffix=sfx)
+                except Exception as e:
+                    rospy.logerr('SC| Error taking BW/THM/OV snapshot: ', e)
+                    return False
         
         if((wpInfo is not None) and (len(media) > 0)):
             self.utils.addMetaData(
@@ -480,6 +538,9 @@ class SoundcamROS(object):
                 media=media, 
                 sigInfo=SignalInfo(*sigInfo),
                 isActionPoint=isActPoint,
+                relevantIdx=tileInfo.relId,
+                preset=self.curPreset,
+                loop=self.curLoop,
                 useMsnPath=True)
         self.publishCaptureFeedback(self.capture_pub)
         if(self.debug):
@@ -489,7 +550,10 @@ class SoundcamROS(object):
     ''' Save recorded stream and returns True/False'''
     def _saveRecording(self, auto=False, start_t=time.time(), 
                        streamType=SoundcamServiceRequest.ALL,
-                       isActPoint=False, info=None, id=None):
+                       sigInfo:SignalInfo=None,
+                       wpInfo:ROSLayerUtils.WaypointInfo=None,
+                       tileInfo:ROSLayerUtils.TileInfo=None,
+                       isActPoint=False):
         if(not auto): # manual recording save
             try:
                 self.manualTrigger = False
@@ -501,7 +565,7 @@ class SoundcamROS(object):
                     rospy.loginfo_throttle(1, 'SC| Manual Recording success!')
                 return True
             except Exception as e:
-                rospy.logerr("SC| Error saving recording, ", e)
+                rospy.logerr("SC| Error saving manual recording, ", e)
                 self._manual_audio_frames_ls.clear()
                 self._manual_frames_ls.clear()
                 if(self.debug):
@@ -514,18 +578,27 @@ class SoundcamROS(object):
                 if(auto_elapsed_t >= self.cfg['min_record_time']):
                     timestamp = datetime.now().strftime("%H_%M_%S")
                     media = list()
+                    if(tileInfo is None):
+                        tileInfo = ROSLayerUtils.TileInfo(0, 0)
+                    # if(wpInfo is None):
+                    #     wpInfo = ROSLayerUtils.WaypointInfo(0, *self.curPose)
+                    
                     if(streamType == SoundcamServiceRequest.ALL):
-                        filename = self.utils.getUniqueName(isImg=False, suffix='BW')
+                        sfx = ''.join(['BW_', str(tileInfo.id)])
+                        filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
                         self.utils.createVideoFromFrames(self._auto_bw_frames_ls, filename)
                         media.append(filename)
 
-                        filename = self.utils.getUniqueName(isImg=False, suffix='THM')
+                        sfx = ''.join(['THM_', str(tileInfo.id)])
+                        filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
                         self.utils.createVideoFromFrames(self._auto_tm_frames_ls, filename)
                         media.append(filename)
 
-                        filename = self.utils.getUniqueName(isImg=False, suffix='OV')
+                        sfx = ''.join(['OV_', str(tileInfo.id)])
+                        filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
                         self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, filename)
                         media.append(filename)
+
                         filename = 'AUD_' + timestamp + '.wav'
                         self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
                                                         self.camera.getAudioInfo()['sample_rate'], 
@@ -533,7 +606,8 @@ class SoundcamROS(object):
                         media.append(filename)
 
                     elif(streamType == SoundcamServiceRequest.VIDEO_STREAM):
-                        filename = self.utils.getUniqueName(isImg=False, suffix='BW')
+                        sfx = ''.join(['BW_', str(tileInfo.id)])
+                        filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
                         self.utils.createVideoFromFrames(self._auto_bw_frames_ls, filename)
                         media.append(filename)
                         filename = 'AUD_' + timestamp + '.wav'
@@ -543,7 +617,8 @@ class SoundcamROS(object):
                         media.append(filename)
 
                     elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
-                        filename = self.utils.getUniqueName(isImg=False, suffix='THM')
+                        sfx = ''.join(['THM_', str(tileInfo.id)])
+                        filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
                         self.utils.createVideoFromFrames(self._auto_tm_frames_ls, filename)
                         media.append(filename)
                         filename = 'AUD_' + timestamp + '.wav'
@@ -553,7 +628,8 @@ class SoundcamROS(object):
                         media.append(filename)
 
                     elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
-                        filename = self.utils.getUniqueName(isImg=False, suffix='OV')
+                        sfx = ''.join(['OV_', str(tileInfo.id)])
+                        filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
                         self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, filename)
                         media.append(filename)
                         filename = 'AUD_' + timestamp + '.wav'
@@ -562,11 +638,15 @@ class SoundcamROS(object):
                                                         filename)
                         media.append(filename)
                     
-                    if(len(media) > 0):
-                        self.utils.addMetaData(isActionPoint=isActPoint, media=media, 
-                                               info=info[:-1], sigInfo=info[-1], id=id, 
-                                               useMsnPath=True)
-                        self.publishCaptureFeedback(self.capture_pub)
+                    if((wpInfo is not None) and (sigInfo is not None) and (len(media) > 0)):
+                        self.utils.addMetaData(
+                            wpInfo=ROSLayerUtils.WaypointInfo(*wpInfo),
+                            media=media, 
+                            sigInfo=SignalInfo(*sigInfo),
+                            isActionPoint=isActPoint,
+                            relevantIdx=tileInfo.relId,
+                            useMsnPath=True)
+                    self.publishCaptureFeedback(self.capture_pub)
                 else:
                     rospy.loginfo('SC| Recording time %fs is less the minimum specified. Discarding ...' % auto_elapsed_t)
                     self._auto_overlay_frames_ls.clear()
@@ -586,6 +666,123 @@ class SoundcamROS(object):
                 rospy.loginfo('SC| Auto Recording success!')
             return True
 
+    
+    ''' Service callback for Configuration and Operation '''
+    def _handle_reset_camera(self, req:SoundcamServiceRequest):
+        if not self.camera.restartCamera():
+            return SoundcamServiceResponse.FAIL
+        return SoundcamServiceResponse.SUCCESS
+    
+    def _handle_start_record(self, req:SoundcamServiceRequest):
+        stream_type = req.op_command1
+        if stream_type not in [SoundcamServiceRequest.VIDEO_STREAM,
+                            SoundcamServiceRequest.ACOUSTIC_STREAM,
+                            SoundcamServiceRequest.THERMAL_STREAM,
+                            SoundcamServiceRequest.OVERLAY_STREAM]:
+            if(self.debug):
+                rospy.logerr(f"Unknown stream type: {stream_type}")
+            return SoundcamServiceResponse.FAIL
+        self.streamType = stream_type
+        self.manualTrigger = True
+        if(self.debug):
+            rospy.loginfo(f"Recording started: Type -> {stream_type}")
+        return SoundcamServiceResponse.SUCCESS
+
+    def _handle_stop_record(self, req:SoundcamServiceRequest):
+        if not self._saveRecording():
+            return SoundcamServiceResponse.FAIL
+        if(self.debug):
+            rospy.loginfo("Recording saved")
+        return SoundcamServiceResponse.SUCCESS
+    
+    def _handle_cancel_record(self, req:SoundcamServiceRequest):
+        self.manualTrigger = False
+        self._manual_frames_ls.clear()
+        if(self.debug):
+            rospy.loginfo('Recording cancelled!')
+        return SoundcamServiceResponse.SUCCESS
+    
+    def _handle_snapshot(self, req:SoundcamServiceRequest):
+        if(not self._takeSnapshot(int(req.op_command1))):
+            return SoundcamServiceResponse.FAIL
+        return SoundcamServiceResponse.SUCCESS
+    
+    def _handle_set_dynamic_crest(self, req:SoundcamServiceRequest):
+        (mode, dynamic, maximum, crest) = self.camera.getScalingMode()
+        dynamic = req.op_command1
+        crest = req.op_command2
+        if(not self.camera.setScalingMode(mode=mode, dynamic=dynamic, 
+                                            crest=crest, max=maximum)):
+            return SoundcamServiceResponse.FAIL
+        return SoundcamServiceResponse.SUCCESS
+    
+    def _handle_set_scaling_mode(self, req:SoundcamServiceRequest):
+        (mode, dynamic, maximum, crest) = self.camera.getScalingMode()
+        mode = int(req.op_command1)
+        if(mode == 0):
+            maximum = req.op_command2
+        else:
+            dynamic = req.op_command2
+            crest = req.op_command3
+        if(not self.camera.setScalingMode(mode=mode, dynamic=dynamic, 
+                            max=None, crest=crest)):
+            return SoundcamServiceResponse.FAIL
+        return SoundcamServiceResponse.SUCCESS
+
+    def _handle_scan_detect(self, req:SoundcamServiceRequest):
+        self.autoDetect = True if (req.op_command2 == 1) else False
+        return SoundcamServiceResponse.SUCCESS
+    
+    def _handle_extra_parameters(self, req:SoundcamServiceRequest):
+        if(len(req.extras) > 0):
+            for param in req.extras:
+                if(param.key == 'uuid'):
+                    self.missionData.uuid = param.value
+                if(param.key == 'missionId'):
+                    self.missionData.id = int(param.value)
+                if(param.key == 'missionName'):
+                    self.missionData.name = param.value
+                if(param.key == 'currentLoop'):
+                    self.curLoop = int(param.value)
+                if(param.key == 'resultDirectory'):
+                    self.missionData.result_dir = param.value
+    
+    def _handle_preset_change(self, req:SoundcamServiceRequest):
+        if(req.preset.presetName != self.curPreset.presetName):
+            if(self.setPreset(req.preset)):
+                rospy.loginfo('Preset sent!')
+                start_t = time.time()
+                while(not self.camera.isDetectionReady()):
+                    rospy.loginfo_throttle(5, "Awaiting Detection algo ...")
+                    if((time.time() - start_t) >= 10.0):
+                        rospy.logwarn("Camera stream taking longer to resume \
+                                    \nCamera might be in Error!")
+                        rospy.loginfo("Camera will be restarted ...")
+                        self.trigger_reset = True
+                        break
+            else:
+                rospy.logerr('Preset change failed!')
+                if(not self.camera.isMeasuring()):
+                    rospy.loginfo("Camera will be restarted ...")
+                    self.trigger_reset = True
+                return SoundcamServiceResponse.FAIL
+        else:
+            if(self.debug):
+                rospy.loginfo("%s is already set!" % self.curPreset.presetName)
+        return SoundcamServiceResponse.SUCCESS
+
+
+    def _get_command_dispatcher(self):
+        return {
+            SoundcamServiceRequest.RESET_CAMERA: self._handle_reset_camera,
+            SoundcamServiceRequest.START_RECORD: self._handle_start_record,
+            SoundcamServiceRequest.STOP_RECORD: self._handle_stop_record,
+            SoundcamServiceRequest.CANCEL_RECORD: self._handle_cancel_record,
+            SoundcamServiceRequest.SNAPSHOT: self._handle_snapshot,
+            SoundcamServiceRequest.SET_DYNAMIC_CREST: self._handle_set_dynamic_crest,
+            SoundcamServiceRequest.SET_SCALING_MODE: self._handle_set_scaling_mode,
+            SoundcamServiceRequest.SCAN_DETECT: self._handle_scan_detect
+        }
     
     def serviceCB(self, req:SoundcamServiceRequest):
         if(self.debug):
@@ -618,6 +815,13 @@ class SoundcamROS(object):
         
         resp = SoundcamServiceResponse()
         resp.results = SoundcamServiceResponse.SUCCESS
+
+        # Get the command dispatcher
+        command_dispatcher = self._get_command_dispatcher()
+
+        # Get Extra Parameters
+        self._handle_extra_parameters(req=req)
+
         if(req.command_type == SoundcamServiceRequest.CMD_TYPE_CONFIG):
             try:
                 self.curCaptureTime = req.captureTime #if (req.captureTime > 0.0) else self.curCaptureTime
@@ -627,89 +831,30 @@ class SoundcamROS(object):
                         self.curMediaType = media
                     else:
                         self.curMediaType = SoundcamServiceRequest.ALL
-                # Get Extra Parameters
-                if(len(req.extras) > 0):
-                    for param in req.extras:
-                        if(param.key == 'uuid'):
-                            self.missionData.uuid = param.value
-                        if(param.key == 'missionId'):
-                            self.missionData.id = int(param.value)
-                        if(param.key == 'missionName'):
-                            self.missionData.name = param.value
 
-                if(req.preset.hasPreset): #Configure camera preset
-                    if(req.preset.presetName != self.curPreset.presetName):
-                        if(self.setPreset(req.preset)):
-                            rospy.loginfo('Preset sent!')
-                        else:
-                            rospy.logerr('Unable to send preset!')
-                            if(not self.camera.isMeasuring()):
-                                self.setPreset(self.curPreset)
-                                self.camera.startMeasurement()
-                            resp.results = SoundcamServiceResponse.FAIL
-                    else:
-                        if(self.debug):
-                            rospy.loginfo("%s is already set!" % self.curPreset.presetName)
+                #Configure camera preset
+                if(req.preset.hasPreset):
+                    self._handle_preset_change(req=req)
             except Exception as e:
                 rospy.logerr("Error occured! ", e)
                 resp.results = SoundcamServiceResponse.FAIL
         elif(req.command_type == SoundcamServiceRequest.CMD_TYPE_OP):
-            try:
-                if(req.command == SoundcamServiceRequest.RESET_CAMERA):
-                    if(not self.camera.restartCamera()):
-                        resp.results = SoundcamServiceResponse.FAIL
-                elif((req.command == SoundcamServiceRequest.START_RECORD)):
-                    dstrm = int(req.op_command1)
-                    if(dstrm not in [SoundcamServiceRequest.VIDEO_STREAM,
-                                 SoundcamServiceRequest.ACOUSTIC_STREAM,
-                                 SoundcamServiceRequest.THERMAL_STREAM, 
-                                 SoundcamServiceRequest.OVERLAY_STREAM]):
-                        if(self.debug):
-                            rospy.logerr('Stream type unknown: ', dstrm)
-                        resp.results = SoundcamServiceResponse.FAIL
-                    else:
-                        self.streamType = dstrm
-                        self.manualTrigger = True
-                        if(self.debug):
-                            rospy.loginfo('Recording video: Type -> %i' % dstrm)
-                elif((req.command == SoundcamServiceRequest.STOP_RECORD)):
-                    if(not self._saveRecording()):
-                        resp.results = SoundcamServiceResponse.FAIL
-                    if(self.debug):
-                        rospy.loginfo('Recording saved!')
-                elif((req.command == SoundcamServiceRequest.CANCEL_RECORD)):
-                    self.manualTrigger = False
-                    self._manual_frames_ls.clear()
-                    if(self.debug):
-                        rospy.loginfo('Recording cancelled!')
-                elif(req.command == SoundcamServiceRequest.SNAPSHOT):
-                    if(not self._takeSnapshot(int(req.op_command1))):
-                        resp.results = SoundcamServiceResponse.FAIL
-                elif(req.command == SoundcamServiceRequest.SET_DYNAMIC_CREST):
-                    (mode, dynamic, maximum, crest) = self.camera.getScalingMode()
-                    dynamic = req.op_command1
-                    crest = req.op_command2
-                    if(not self.camera.setScalingMode(mode=mode, dynamic=dynamic, 
-                                                      crest=crest, max=maximum)):
-                        resp.results = SoundcamServiceResponse.FAIL
-                elif(req.command == SoundcamServiceRequest.SET_SCALING_MODE):
-                    (mode, dynamic, maximum, crest) = self.camera.getScalingMode()
-                    mode = int(req.op_command1)
-                    if(mode == 0):
-                        maximum = req.op_command2
-                    else:
-                        dynamic = req.op_command2
-                        crest = req.op_command3
-                    if(not self.camera.setScalingMode(mode=mode, dynamic=dynamic, 
-                                        max=None, crest=crest)):
-                        resp.results = SoundcamServiceResponse.FAIL
-                elif(req.command == SoundcamServiceRequest.SCAN_DETECT):
-                    self.autoDetect = True if (req.op_command2 == 1) else False
-                else:
+            # Check if the command is in the dispatcher
+            if req.command in command_dispatcher:
+                try:
+                    # Call the appropriate handler
+                    result = command_dispatcher[req.command](req)
+                    resp.results = result
+                except Exception as e:
+                    rospy.logerr(f"Error handling command {req.command}: {e}")
                     resp.results = SoundcamServiceResponse.FAIL
-            except Exception as e:
-                rospy.logerr("Error occured! ", e)
+            else:
+                rospy.logerr(f"Unknown Operation command: {req.command}")
                 resp.results = SoundcamServiceResponse.FAIL
+        else:
+            rospy.logerr(f"Unknown command: {req.command}")
+            resp.results = SoundcamServiceResponse.FAIL
+                
         if(self.debug):
             if(resp.results == SoundcamServiceResponse.SUCCESS):
                 rospy.loginfo("SC| Service Call success!")
@@ -717,6 +862,7 @@ class SoundcamROS(object):
                 rospy.logerr("SC| Service Call failure!")
         resp.ack.data = True
         return resp
+    
     
     '''
     -------------------------ACTION SERVER
@@ -730,101 +876,175 @@ class SoundcamROS(object):
                 rospy.loginfo('UUID - %s' % self.missionData.uuid)
                 rospy.loginfo('Newly created path is: %s' % self.utils.getPath(fetchMsnDir=True))
 
-    from diagnostic_msgs.msg import KeyValue
+    def captureDetections(self):
+        while(self.canRun.is_set()):
+            if(self.runCmp.is_set()):
+                # Capture detection values
+                with self.signalLock:
+                    siginfo = self.signalInfo._asdict()
+                    prv_siginfo = self.past_sig_i._asdict()
+
+                if(prv_siginfo['mean_energy'] == 0.0 and 
+                prv_siginfo['std_dev'] == 0.0 and 
+                prv_siginfo['acoustic_energy'] == 0.0 and 
+                prv_siginfo['current_energy'] == 0.0):
+                    prv_siginfo = siginfo
+                
+                if((not prv_siginfo['detection']) and siginfo['detection']):
+                    prv_siginfo['detection'] = siginfo['detection']
+
+                if(prv_siginfo['current_energy'] < siginfo['current_energy']):
+                    prv_siginfo['current_energy'] = siginfo['current_energy']
+
+                if(siginfo['mean_energy'] > prv_siginfo['mean_energy']):
+                    prv_siginfo['mean_energy'] = siginfo['mean_energy']
+                    prv_siginfo['snr'] = siginfo['snr']
+                    prv_siginfo['std_dev'] = siginfo['std_dev']
+
+                if(siginfo['hi_thresh'] > prv_siginfo['hi_thresh']):
+                    prv_siginfo['hi_thresh'] = siginfo['hi_thresh']
+                if(siginfo['lo_thresh'] > prv_siginfo['lo_thresh']):
+                    prv_siginfo['lo_thresh'] = siginfo['lo_thresh']
+                if(siginfo['acoustic_energy'] > prv_siginfo['acoustic_energy']):
+                    prv_siginfo['acoustic_energy'] = siginfo['acoustic_energy']
+                    with self.tileLock:
+                        tile_i = self.tileInfo._asdict()
+                        tile_i['relId'] = tile_i['id']
+                        self.tileInfo = ROSLayerUtils.TileInfo(**tile_i)
+            else:
+                time.sleep(0.1)
+            
+
     def executeCB(self, goal: SoundcamGoal):
         rospy.loginfo('SC| Received goal!')
-        #save detection/recording parameters
-        autoDetectVar = self.autoDetect
-        self.autoDetect = False
-        self.recordTrigger = False #deactivate record triggers
-        #extract parameters
-        streamType = SoundcamServiceRequest.ALL
-        rospy.loginfo('Extracting goal parameters ...')
-        for param in goal.parameters:
-            if(param.key == 'uuid'):
-                self.missionData.uuid = param.value
-            if(param.key == 'delay'):
-                delay = int(param.value)
-            if(param.key == 'numCaptures'):
-                numCaptures = int(param.value)
-            if(param.key == 'recordTime'):
-                recordTime = float(param.value) * self._f_mul
-            if(param.key == 'mediaType'):
-                if(param.value != ''):
-                    media = [int(x) for x in param.value.split('|')]
-                    if(SoundcamServiceRequest.ALL not in media):
-                        streamType = media
-            if(param.key == 'missionId'):
-                self.missionData.id = int(param.value)
-            if(param.key == 'missionName'):
-                self.missionData.name = param.value
-            if(param.key == 'waypointId'):
-                wpId = int(param.value)
-            if(param.key == 'waypointX'):
-                wpX = float(param.value)
-            if(param.key == 'waypointY'):
-                wpY = float(param.value)
-            if(param.key == 'waypointTheta'):
-                wpTheta = float(param.value)
+
+        start_t = time.time()
+        can_proceed = True
+        while(not self.camera.isDetectionReady()):
+            rospy.loginfo_throttle(5, "Awaiting detection algorithm to resume ...")
+            if((time.time() - start_t) >= 5.0):
+                can_proceed = False
+                rospy.logerr("SC| Camera in Error!")
+                rospy.logerr("SC| Goal will be aborted!")
+                break
         
-        #prepare directory
-        self.prepareMissionDirectory()
+        if(can_proceed):
+            #save detection/recording parameters
+            tmp_autoDetect = self.autoDetect
+            self.autoDetect = False
+            self.recordTrigger = False #deactivate record triggers
+            
+            #extract parameters
+            rospy.loginfo('Extracting goal parameters ...')
+            streamType = SoundcamServiceRequest.ALL
+            for param in goal.parameters:
+                if(param.key == 'uuid'):
+                    self.missionData.uuid = param.value
+                if(param.key == 'delay'):
+                    delay = int(param.value)
+                if(param.key == 'numCaptures'):
+                    numCaptures = int(param.value)
+                if(param.key == 'recordTime'):
+                    recordTime = float(param.value) * self._f_mul
+                if(param.key == 'mediaType'):
+                    if(param.value != ''):
+                        media = [int(x) for x in param.value.split('|')]
+                        if(SoundcamServiceRequest.ALL not in media):
+                            streamType = media
+                if(param.key == 'missionId'):
+                    self.missionData.id = int(param.value)
+                if(param.key == 'missionName'):
+                    self.missionData.name = param.value
+                if(param.key == 'currentLoop'):
+                    self.curLoop = int(param.value)
+                if(param.key == 'waypointId'):
+                    wpId = int(param.value)
+                if(param.key == 'waypointX'):
+                    wpX = float(param.value)
+                if(param.key == 'waypointY'):
+                    wpY = float(param.value)
+                if(param.key == 'waypointTheta'):
+                    wpTheta = float(param.value)
+                if(param.key == 'resultDirectory'):
+                    self.missionData.result_dir = param.value
+                if(param.key == 'imageTileNo'): #default = 0
+                    tile_no = int(param.value)
+                
+            #initialize containers
+            wpInfo = ROSLayerUtils.WaypointInfo(wpId, wpX, wpY, wpTheta)
+            with self.tileLock:
+                self.tileInfo = ROSLayerUtils.TileInfo(tile_no, tile_no)
 
-        #run while loop
-        rate = rospy.Rate(30)
-        result = False
-        cnt = 1
-        past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
-        wpInfo = ROSLayerUtils.WaypointInfo(wpId, wpX, wpY, wpTheta)
-        rospy.loginfo('Processing goal ...')
-        while(not rospy.is_shutdown()):
-            if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)):
-                #Take Snapshots
-                if(self._takeSnapshot(streamType=streamType, wpInfo=wpInfo, 
-                                      sigInfo=SignalInfo(*self.signalInfo))):
-                    cnt += 1
-                    self.act_feedbk.capture_count = cnt
-                    self.act_feedbk.currentTime.data = rospy.Time.now()
-                    self.act_srvr.publish_feedback(self.act_feedbk)
-                    time.sleep(delay)
-                else:
-                    rospy.logerr('SC| Snapshot failed!')
-                    break
+            #run while loop
+            rate = rospy.Rate(15)
+            result = False
+            cnt = 1
 
-                if(cnt > numCaptures):
-                    result = True
-                    break
-            elif((recordTime > self.cfg['min_record_time']) and (numCaptures > 0)):
-                if(self.signalInfo.mean > past_sig_i.mean):
-                    past_sig_i = SignalInfo(*self.signalInfo)
-                #Make Recordings
-                if(not self.recordTrigger): #start recording
-                    self.recordTrigger = True
-                    record_start_t = time.time()
-                else: #while recording
-                    if((time.time()-record_start_t) >= recordTime): #save recording
-                        rospy.loginfo('SC| Saving recording ...')
-                        if(self._saveRecording(auto=True, isActPoint=True, 
-                                            streamType=streamType,
-                                            start_t=record_start_t, 
-                                            info=(wpX, wpY, wpTheta, past_sig_i), id=wpId)):
-                            cnt += 1
-                            past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
-                            time.sleep(delay)
-                    else: # report progress
-                        rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
+            if(self.tileInfo.id <= 1):
+                with self.signalLock:
+                    self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+            
+            #prepare directory
+            self.prepareMissionDirectory()
+            self.runCmp.set() #activates detectCompare thread
+            time.sleep(1.0)
+            
+            rospy.loginfo('Processing goal ...')
+            while(not rospy.is_shutdown()):
+                if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)): #Take Snapshots
+                    with self.signalLock:
+                        with self.tileLock:
+                            res = self._takeSnapshot(streamType=streamType, 
+                                          wpInfo=wpInfo, sigInfo=SignalInfo(*self.past_sig_i),
+                                          tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo))
+                    if(res):
+                        cnt += 1
                         self.act_feedbk.capture_count = cnt
                         self.act_feedbk.currentTime.data = rospy.Time.now()
                         self.act_srvr.publish_feedback(self.act_feedbk)
-                    
+                        time.sleep(delay)
+                    else:
+                        rospy.logerr('SC| Snapshot failed!')
+                        break
+
                     if(cnt > numCaptures):
                         result = True
                         break
-            else:
-                rospy.logerr('SC| Snapshot nichts zu tun!')
-                result = False
-                break
-            rate.sleep()
+                elif((recordTime > self.cfg['min_record_time']) and (numCaptures > 0)): #Make Video Recordings
+                    if(not self.recordTrigger): #start recording
+                        self.recordTrigger = True
+                        record_start_t = time.time()
+                    else: #while recording
+                        if((time.time()-record_start_t) >= recordTime): #save recording
+                            rospy.loginfo('SC| Saving recording ...')
+                            with self.signalLock:
+                                with self.tileLock:
+                                    res = self._saveRecording(auto=True, isActPoint=True, 
+                                                streamType=streamType,
+                                                start_t=record_start_t, 
+                                                wpInfo=wpInfo,
+                                                sigInfo=SignalInfo(*self.past_sig_i),
+                                                tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo))
+                            if(res):
+                                cnt += 1
+                                with self.signalLock:
+                                    self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                                time.sleep(delay)
+                        
+                        if(cnt > numCaptures):
+                            result = True
+                            break
+                        else:
+                            rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
+                            self.act_feedbk.capture_count = cnt
+                            self.act_feedbk.currentTime.data = rospy.Time.now()
+                            self.act_srvr.publish_feedback(self.act_feedbk)
+
+                else:
+                    rospy.logerr('SC| Snapshot nichts zu tun!')
+                    result = False
+                    break
+                rate.sleep()
 
         #on loop exit
         self.act_result.result = result
@@ -834,7 +1054,8 @@ class SoundcamROS(object):
             self.act_srvr.set_succeeded(self.act_result)
         #restore detection settings and reset rest period
         self.restDist = time.time()
-        self.autoDetect = autoDetectVar
+        self.autoDetect = tmp_autoDetect
+        self.runCmp.clear()
 
 
     '''
