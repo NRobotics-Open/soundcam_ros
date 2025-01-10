@@ -1062,62 +1062,75 @@ class SoundcamROS(object):
         Ping, Connect & Configure Camera
     '''
     def attemptConnection(self):
-        rate = rospy.Rate(1)
-        while(not rospy.is_shutdown() and self.canRun.is_set()):
+        rate = rospy.Rate(1.0)
+        conn_counter = 1
+        max_attempts = 3
+        while(not rospy.is_shutdown() and self.canRun):
             if(self.camera.pingCamera(deviceIP=self.cfg['ip'])):
-                if((not self.camera.isConnected()) and self.camera.isAlive()):
-                    if(self.camera.connect()):
-                        rospy.loginfo('Connection established!')
-                    else:
-                        rospy.logwarn('Retrying to connect in 3 seconds ...')
-                        rospy.sleep(3.0)
+                if(self.camera.AKAMsAssemble()):
+                    if(conn_counter >= max_attempts):
+                        self.trigger_reset = True
+                        conn_counter = 1
                         continue
-                if(self.camera.isConnected()):
-                    if(self.camera.hasStatus()):
-                        rospy.loginfo('Initial Device status received...')
-                        rospy.loginfo('Sending Initial configuration and preparing device ...')
-                        self.camera.initialConfigure()
-                        self.camera.startMeasurement()
-                        break
+                    
+                    status:Status = self.camera.getStatus()['Status']
+                    print('Camera Status (attemptconnection): ', status)
+
+                    if((status.isConnectedHost == 0)):
+                        if(self.camera.connect()):
+                            rospy.loginfo('Connection established!')
+                            while(not self.camera.hasStatus()):
+                                pass
+                        else:
+                            conn_counter += 1
+                            rospy.logwarn('Retrying to connect in 3 seconds ...')
+                            rospy.sleep(3.0)
+                            continue
                     else:
-                        rospy.loginfo('Awaiting Initial Device status ...')
+                        if(self.camera.hasStatus()):
+                            rospy.loginfo('Initial Device status received...')
+                            rospy.loginfo('Sending Initial configuration and preparing device ...')
+                            self.camera.initialConfigure()
+                            self.camera.startMeasurement()
+                            break
+                        else:
+                            rospy.loginfo('Awaiting Initial Device status ...')
+                else: #on_detectDevice failure
+                    print('Waiting for a device to become available ...')
+                    rospy.sleep(1.5)
             else:
-                rospy.loginfo('Unable to reach Soundcamera on IP:{0} \n \
-                              Trying again after {1} seconds'.format(self.cfg['ip'], 3))
-                time.sleep(3.0)
-                continue
+                rospy.loginfo('Unable to reach SoundCamera on IP:{0} \n \
+                              Trying again after {1} seconds'.format(self.cfg['ip'], 5))
+                time.sleep(5.0)
             rate.sleep()
-        return self.camera.isConnected()
+        return (self.camera.isConnected())
 
     def run(self):
-        rate = rospy.Rate(40)
+        rate = rospy.Rate(40.0)
         has_updated_record_start_t = False
         record_start_t = time.time()
+        disconnect_t = time.time()
+        disconnect_ev = False
         prevPose = [0.0, 0.0, 0.0]
         firstrun = True
-        past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+
         while(not rospy.is_shutdown()):
             if(self._isStartup):
                 if(self.attemptConnection()):
                     if(firstrun):
                         self.bringUpInterfaces()
                         firstrun = False
-                        rospy.loginfo_once('SC| Running ...')
-                    else:
-                        rospy.loginfo_once('SC| Restarted ...')
-                    self._isStartup = False
-                    
+                    self._isStartup = False   
             else: 
-                self.signalInfo:SignalInfo = self.camera.getSignalInfo()
-                if(self.debug): 
-                    #Mean Energy, Std Dev, High Energy Thresh, Current Energy, Low Energy Thresh, SNR, detection flag
-                    print(self.signalInfo)
+                with self.signalLock: #always update signal Info
+                    self.signalInfo:SignalInfo = SignalInfo(*self.camera.getSignalInfo())
+
                 if(self.missionData.id != 0): #only perform auto-detection when explicitly required
                     if(self.autoDetect):
                         #Collect highest signal info during recording
                         if(self.recordTrigger):
-                            if(self.signalInfo.mean > past_sig_i.mean):
-                                past_sig_i = self.signalInfo
+                            if(self.signalInfo.mean_energy > self.past_sig_i.mean_energy):
+                                self.past_sig_i = self.signalInfo
                         
                         #Begin collecting frames before valid detection is confirmed
                         if(self.signalInfo.pre_activation and 
@@ -1128,7 +1141,7 @@ class SoundcamROS(object):
                             self.recordTrigger = True
                             has_updated_record_start_t = False
                             prevPose = self.curPose
-                            past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                            self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
                         if(self.signalInfo.detection):
                             if(not has_updated_record_start_t):
@@ -1139,22 +1152,28 @@ class SoundcamROS(object):
                             if(self.recordTrigger and ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
                                 rospy.loginfo('SC| Saving AUTO recording [Autodetect| Timeout] ...')
                                 self.prepareMissionDirectory()
-                                self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, past_sig_i))
+                                self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, self.curPreset, 0, self.past_sig_i))
                                 prevPose = self.curPose
                         
                         if(not self.signalInfo.detection and self.recordTrigger):
                             rospy.loginfo('SC| Saving AUTO recording [Autodetect| Deactivation] ...')
                             self.prepareMissionDirectory()
-                            self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, past_sig_i))
+                            self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, self.curPreset, 0, self.past_sig_i))
                             prevPose = self.curPose                  
 
-            self.publishDetection(self.signalInfo, self.camera.getBlobData())
-            self.publishPreset()
-            if(not self.camera.isAlive()):
-                rospy.logwarn('Camera disconnected!')
-                rospy.loginfo('Reconnection attempt in 2 seconds ...')
-                rospy.sleep(2.0)
-                self._isStartup = True
+                self.publishDetection(self.signalInfo, self.camera.getBlobData())
+                if(not self.camera.isAlive()):
+                    rospy.logwarn('Camera disconnected!')
+                    if(not disconnect_ev):
+                        disconnect_t = time.time()
+                        disconnect_ev = True
+                        rospy.logwarn('Will wait 5.0 seconds for stream to resume ...')
+
+                    if((time.time() - disconnect_t) >= 5.0):
+                        rospy.logwarn('Stream timeout!')
+                        rospy.logwarn('Attempting to re-connect ...')
+                        self._isStartup = True
+                        disconnect_ev = False
             rate.sleep()
 
 if __name__ == '__main__':
