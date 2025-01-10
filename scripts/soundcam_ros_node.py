@@ -67,7 +67,7 @@ class SoundcamROS(object):
         self.devStr = list()
         self.pubDevStream = self.cfg['publish_dev']
         self.prevUUID = ''
-        self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset')
+        self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset', None)
         self.curPose = [0.0, 0.0, 90.0]
 
         self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -416,6 +416,13 @@ class SoundcamROS(object):
                 return self.thm_img
             else:
                 return self.thm_img
+        elif(streamType == SoundcamServiceRequest.ACOUSTIC_STREAM):
+            img = self.camera.getACVideo()
+            if(img is not None):
+                self.ac_img = img
+                return self.ac_img
+            else:
+                return self.ac_img
         elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
             bw_img = self.camera.getBWVideo()
             ac_img = self.camera.getACVideo()
@@ -1064,11 +1071,17 @@ class SoundcamROS(object):
     def attemptConnection(self):
         rate = rospy.Rate(1.0)
         conn_counter = 1
-        max_attempts = 3
+        max_attempts = 5
         while(not rospy.is_shutdown() and self.canRun):
+            if(self.trigger_reset):
+                rospy.loginfo_throttle(3.0, 'Waiting for Camera Restart to finish ...')
+                rate.sleep()
+                continue
+
             if(self.camera.pingCamera(deviceIP=self.cfg['ip'])):
                 if(self.camera.AKAMsAssemble()):
                     if(conn_counter >= max_attempts):
+                        print('Max connect attempts surpassed: will trigger RESTART')
                         self.trigger_reset = True
                         conn_counter = 1
                         continue
@@ -1077,14 +1090,16 @@ class SoundcamROS(object):
                     print('Camera Status (attemptconnection): ', status)
 
                     if((status.isConnectedHost == 0)):
-                        if(self.camera.connect()):
+                        if(self.camera.reconnect(max_retries=3)):
                             rospy.loginfo('Connection established!')
                             while(not self.camera.hasStatus()):
-                                pass
+                                rospy.loginfo_throttle(1.5, 'Awaiting hasStatus() ...')
+                            continue
                         else:
                             conn_counter += 1
-                            rospy.logwarn('Retrying to connect in 3 seconds ...')
-                            rospy.sleep(3.0)
+                            self.camera.disconnect()
+                            rospy.logwarn('Retrying to connect in 5 seconds ...')
+                            rospy.sleep(5.0)
                             continue
                     else:
                         if(self.camera.hasStatus()):
@@ -1114,13 +1129,16 @@ class SoundcamROS(object):
         prevPose = [0.0, 0.0, 0.0]
         firstrun = True
 
+        alive_t = time.time()
+
         while(not rospy.is_shutdown()):
             if(self._isStartup):
                 if(self.attemptConnection()):
+                    rospy.loginfo('[X] Camera connected!')
                     if(firstrun):
                         self.bringUpInterfaces()
                         firstrun = False
-                    self._isStartup = False   
+                    self._isStartup = False
             else: 
                 with self.signalLock: #always update signal Info
                     self.signalInfo:SignalInfo = SignalInfo(*self.camera.getSignalInfo())
@@ -1129,8 +1147,7 @@ class SoundcamROS(object):
                     if(self.autoDetect):
                         #Collect highest signal info during recording
                         if(self.recordTrigger):
-                            if(self.signalInfo.mean_energy > self.past_sig_i.mean_energy):
-                                self.past_sig_i = self.signalInfo
+                            self.runCmp.set()
                         
                         #Begin collecting frames before valid detection is confirmed
                         if(self.signalInfo.pre_activation and 
@@ -1150,30 +1167,40 @@ class SoundcamROS(object):
                                 has_updated_record_start_t = True
 
                             if(self.recordTrigger and ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
-                                rospy.loginfo('SC| Saving AUTO recording [Autodetect| Timeout] ...')
+                                rospy.loginfo('SC| Saving AUTO recording [Autodetect| reason: Timeout] ...')
                                 self.prepareMissionDirectory()
-                                self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, self.curPreset, 0, self.past_sig_i))
+                                self._saveRecording(auto=True, start_t=record_start_t, 
+                                                    wpInfo=ROSLayerUtils.WaypointInfo(0, *prevPose), 
+                                                    sigInfo=SignalInfo(*self.past_sig_i))
                                 prevPose = self.curPose
                         
                         if(not self.signalInfo.detection and self.recordTrigger):
-                            rospy.loginfo('SC| Saving AUTO recording [Autodetect| Deactivation] ...')
+                            rospy.loginfo('SC| Saving AUTO recording [Autodetect| reason: Deactivation] ...')
                             self.prepareMissionDirectory()
-                            self._saveRecording(auto=True, start_t=record_start_t, info=(*self.curPose, self.curPreset, 0, self.past_sig_i))
+                            self._saveRecording(auto=True, start_t=record_start_t, 
+                                                wpInfo=ROSLayerUtils.WaypointInfo(0, *prevPose), 
+                                                sigInfo=SignalInfo(*self.past_sig_i))
                             prevPose = self.curPose                  
 
                 self.publishDetection(self.signalInfo, self.camera.getBlobData())
-                if(not self.camera.isAlive()):
-                    rospy.logwarn('Camera disconnected!')
-                    if(not disconnect_ev):
-                        disconnect_t = time.time()
-                        disconnect_ev = True
-                        rospy.logwarn('Will wait 5.0 seconds for stream to resume ...')
 
-                    if((time.time() - disconnect_t) >= 5.0):
-                        rospy.logwarn('Stream timeout!')
-                        rospy.logwarn('Attempting to re-connect ...')
-                        self._isStartup = True
-                        disconnect_ev = False
+                if((time.time() - alive_t) >= 1.0):
+                    if(not self.camera.isAlive()):
+                        rospy.logwarn_throttle(1.0, '[X] Camera disconnected!')
+                        if(not disconnect_ev):
+                            disconnect_t = time.time()
+                            disconnect_ev = True
+                            rospy.logwarn('Will wait 6.0 seconds for stream to resume ...')
+                        else:
+                            if((time.time() - disconnect_t) >= 6.0):
+                                rospy.logwarn('Stream timeout!')
+                                rospy.logwarn('Attempting to re-connect ...')
+                                self._isStartup = True
+                                disconnect_ev = False
+                    else:
+                        if(disconnect_ev):
+                            disconnect_ev = False
+                    alive_t = time.time()
             rate.sleep()
 
 if __name__ == '__main__':

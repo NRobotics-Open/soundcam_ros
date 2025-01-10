@@ -82,7 +82,7 @@ class ROSLayerUtils(object):
     def addMetaData(self, wpInfo:WaypointInfo, media:list, sigInfo:SignalInfo, isActionPoint=False, 
                     preset:Preset=None, loop=1, relevantIdx:int=0, leakRate:float=0.0, useMsnPath=False):
         try:
-            if(wpInfo.id is 0):
+            if(wpInfo.id == 0):
                 wpInfo._replace(id=self.localId)
             preset_dt = ('', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             if(preset is not None):
@@ -277,14 +277,23 @@ class ROSLayerUtils(object):
             save_to = os.path.join(self.getPath(fetchMsnDir=True), filename)
         sf.write(save_to, audio_data, samplerate)
     
-    def imageOverlay(self, img_arr1:np.array, img_arr2:np.array):
-        #print(acFrame.shape)
-        img_arr1 = cv2.cvtColor(img_arr1, cv2.COLOR_GRAY2BGRA)
-        m2 = img_arr2[:,:,3]
+    def imageOverlay(self, bkg_img: np.array, ovly_img: np.array):
+        # Ensure background image is in BGRA format
+        if len(bkg_img.shape) == 2:
+            bkg_img = cv2.cvtColor(bkg_img, cv2.COLOR_GRAY2BGRA)
+        elif bkg_img.shape[2] == 3:
+            bkg_img = cv2.cvtColor(bkg_img, cv2.COLOR_BGR2BGRA)
 
-        m2i = cv2.bitwise_not(m2)
-        alpha2i = cv2.cvtColor(m2i, cv2.COLOR_GRAY2BGRA)/255.0
+        # Ensure overlay image is in BGRA format
+        if ovly_img.shape[2] == 3:
+            ovly_img = cv2.cvtColor(ovly_img, cv2.COLOR_BGR2BGRA)
+
+        # Extract the alpha channel from the overlay image
+        alpha_channel = ovly_img[:, :, 3]
+
+        # Create an inverse alpha mask
+        inv_alpha = cv2.bitwise_not(alpha_channel)
+        alpha2i = cv2.cvtColor(inv_alpha, cv2.COLOR_GRAY2BGRA)/255.0
 
         # Perform blending and limit pixel values to 0-255 (convert to 8-bit)
-        b1i = cv2.convertScaleAbs(img_arr2*(1-alpha2i) + img_arr1*alpha2i)
-        return b1i
+        return cv2.convertScaleAbs(ovly_img*(1-alpha2i) + bkg_img*alpha2i)

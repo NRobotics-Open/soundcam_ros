@@ -528,8 +528,9 @@ class CameraProtocol(object):
 
                 if(self.debug and (unpacked is not None)):
                     #print('Decoding protocol version %i message' % self.pcProtocolVersion)
-                    if(self.debug):
-                        print('Unpacked: ', unpacked)
+                    # if(self.debug):
+                    #     print('Unpacked: ', unpacked)
+                    pass
             self.decode(unpackedLs=unpacked)
     
     def decode(self, unpackedLs:list)->None:

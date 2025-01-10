@@ -67,7 +67,7 @@ class SoundCamConnector(object):
         self.prev_frame_t = 0
 
         #prepare utils
-        self.scamUtils = SU(window=60, detectionWin=5, acFreq=10, specFreq=4, 
+        self.scamUtils = SU(window=30, detectionWin=5, acFreq=10, specFreq=4, 
                             hi_thresh_f=self.cfgObj['hi_thresh_factor'],
                             low_thresh_f=self.cfgObj['low_thresh_factor'],
                             trigger_thresh=self.cfgObj['trigger_threshold'],
@@ -121,22 +121,22 @@ class SoundCamConnector(object):
 
         #post-processing setup
         self.overlayBA = bitarray(self.cfgObj['overlayConfig'])
-        self.proc_vidBW = deque(maxlen=60)
+        self.proc_vidBW = deque(maxlen=30)
         self.proc_vidBW_lock = Lock()
         self.dqueues.append(self.proc_vidBW)
-        self.proc_vidOBW = deque(maxlen=60)
+        self.proc_vidOBW = deque(maxlen=30)
         self.proc_vidOBW_lock = Lock()
         self.dqueues.append(self.proc_vidOBW)
-        self.proc_acVidQ = deque(maxlen=60)
+        self.proc_acVidQ = deque(maxlen=30)
         self.proc_acVidQ_lock = Lock()
         self.dqueues.append(self.proc_acVidQ)
-        self.proc_specQ = deque(maxlen=60)
+        self.proc_specQ = deque(maxlen=30)
         self.proc_specQ_lock = Lock()
         self.dqueues.append(self.proc_specQ)
-        self.proc_audQ = deque(maxlen=60)
+        self.proc_audQ = deque(maxlen=30)
         self.proc_audQ_lock = Lock()
         self.dqueues.append(self.proc_audQ)
-        self.proc_thmQ = deque(maxlen=60)
+        self.proc_thmQ = deque(maxlen=30)
         self.proc_thmQ_lock = Lock()
         self.dqueues.append(self.proc_thmQ)
             
@@ -152,36 +152,36 @@ class SoundCamConnector(object):
         #     self.cfgObj['visualizeVideo'] = True
         
         if(self.cfgObj['processVideo']):
-            self.vidQ = deque(maxlen=30)
+            self.vidQ = deque(maxlen=15)
             self.vidQ_lock = Lock()
             self.dqueues.append(self.vidQ)
             self.threads.append(Thread(target=self.processVideo, daemon=True))
         if(self.cfgObj['processAcVideo']):
-            self.acVidQ = deque(maxlen=30)
+            self.acVidQ = deque(maxlen=15)
             self.acVidQ_lock = Lock()
             self.dqueues.append(self.acVidQ)
             self.ac_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processAcVideo, daemon=True))
         if(self.cfgObj['processSpectrum']):
-            self.specQ = deque(maxlen=30)
+            self.specQ = deque(maxlen=15)
             self.specQ_lock = Lock()
             self.dqueues.append(self.specQ)
             self.spec_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processSpectrum, daemon=True))
         if(self.cfgObj['processAudio']):
-            self.audQ = deque(maxlen=30)
+            self.audQ = deque(maxlen=15)
             self.audQ_lock = Lock()
             self.dqueues.append(self.audQ)
             self.aud_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processAudio, daemon=True))
         if(self.cfgObj['processThermal']):
-            self.thermalQ = deque(maxlen=30)
+            self.thermalQ = deque(maxlen=15)
             self.thermalQ_lock = Lock()
             self.dqueues.append(self.thermalQ)
             self.threads.append(Thread(target=self.processThermalVideo, daemon=True))
         
         if(self.cfgObj['dataToSend2'] > 0):
-            self.leakRateQ = deque(maxlen=30)
+            self.leakRateQ = deque(maxlen=10)
             self.leakRateQ_lock = Lock()
             self.dqueues.append(self.leakRateQ)
             self.threads.append(Thread(target=self.processLeakRate, daemon=True))
@@ -280,6 +280,7 @@ class SoundCamConnector(object):
                             print('StatusObj: ', statusObj)
                         return True
                 except socket.timeout:
+                    print('[AKAMs] Socket timeout!')
                     return False
             else:
                 MESSAGE = b"Hello AKAMs send your ID"
@@ -305,6 +306,9 @@ class SoundCamConnector(object):
                     else:
                         print("[AKAMs] No device found!")
                         return False
+        except IOError as e:
+            self.socket_instances_singleton = False
+            self._createSockets()
         except Exception as ex:
             print('Uncaught Error in AKAMsAssemble: ', ex)
             return None
@@ -349,12 +353,26 @@ class SoundCamConnector(object):
                                                    self.cfgObj['cameraLighting'])
         self.sendData(query=query)
         return conState
+    
+    def reconnect(self, max_retries=5):
+        retries = 0
+        while retries < max_retries:
+            if self.connect():
+                print("Reconnected successfully!")
+                return True
+            else:
+                print("Reconnection failed. Retrying...")
+                retries += 1
+                time.sleep(2)
+
+        print("Max retries reached. Could not reconnect.")
+        return False
 
     '''Sends command to reset the camera'''
     def restartCamera(self):
         print('Restarting device...')
-        #disable cyclic loop
-        self.recvStream = False
+        
+        self.recvStream = False #disable cyclic loop
         self.is_alive = False
         #send reset command
         query = self.protocol.generateReadRequest(command=CommandCodes.ResetReq, 
@@ -377,7 +395,8 @@ class SoundCamConnector(object):
             print('Waiting for device to be ready ...')
             if(self.pingCamera(self.ip_addr)):
                 if(not connState):
-                    connState = self.connect()
+                    self._createSockets()
+                    connState = self.reconnect()
                 else:
                     self.initialConfigure()
                     while(not self.hasStatus()):
@@ -411,10 +430,23 @@ class SoundCamConnector(object):
 
     def disconnect(self):
         self.stopMeasurement()
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.udp_sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.udp_recv_sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.sock.close()
         self.udp_sock.close()
         self.udp_recv_sock.close()
         self.connected = False
+        self.socket_instances_singleton = False
         print('Disconnected!')
 
     def terminate(self):
@@ -555,6 +587,19 @@ class SoundCamConnector(object):
             self.sendData(query=query)
             self.recvStream = True
             print('Starting measurement ...')
+            start_t = time.time()
+            max_t = 10.0
+            while True:
+                if(self.AKAMsAssemble()):
+                    status:Status = self.protocol.getDeviceStatus()['Status']
+                    if(status.isTransferActive == 1):
+                        print('Transfer status active!')
+                        break
+                print('Waiting for active transfer status ...')
+                time.sleep(1.0)
+
+                if((time.time() - start_t) >= max_t):
+                    raise Exception('Failure starting measurement!')
         except Exception as ex:
             print('Error Starting Measurement!')
             return False
@@ -1131,12 +1176,12 @@ class SoundCamConnector(object):
     
     ''' Return camera alive status '''
     def isAlive(self):
-        self.AKAMsAssemble()
-        if(not self.AKAMsAssemble()):
-            return False
-        return (self.is_alive and 
-                (self.protocol.getDeviceStatus()['Status'].isConnectedHost == 1) and 
-                (self.protocol.getDeviceStatus()['Status'].isTransferActive == 1))
+        if(self.AKAMsAssemble()):
+            status:Status = self.protocol.getDeviceStatus()['Status']
+            return (self.is_alive and 
+                    (status.isConnectedHost == 1) and 
+                    (status.isTransferActive == 1))
+        return False
 
     ''' Returns the BW Video frame '''
     def getBWVideo(self):
@@ -1230,7 +1275,7 @@ class SoundCamConnector(object):
     def getScalingMode(self):
         return self.scamUtils.getScalingMode()
     
-    def isContinuousStream(self):
+    def hasTCPStream(self):
         return self.hasStreamData
     
     def isDetectionReady(self):
@@ -1343,7 +1388,7 @@ if __name__ == '__main__':
 
     signal.signal(signal.SIGINT, camObj.signal_handler)
 
-    if(camObj.connect()):
+    if(camObj.reconnect()):
         print('Sending Initial configuration and preparing state')
         camObj.initialConfigure()
         while(not camObj.hasStatus()):

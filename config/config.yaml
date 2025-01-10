@@ -71,7 +71,7 @@ auto_detect: True
 max_megabytes: 1000 #Megabytes
 min_record_time: 1.0 #seconds
 max_record_time: 5.0 #seconds
-frame_multiplier: 2.0 #for video recording timing
+frame_multiplier: 1.0 #for video recording timing
 rest_dist: 3.0 #meters How far the robot can travel before recording the next trigger in Autodetect mode
 pose_topic: '/robot_pose'
 capture_feedback_topic: '/wp/capture/status'
