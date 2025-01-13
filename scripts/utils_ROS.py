@@ -277,23 +277,26 @@ class ROSLayerUtils(object):
             save_to = os.path.join(self.getPath(fetchMsnDir=True), filename)
         sf.write(save_to, audio_data, samplerate)
     
-    def imageOverlay(self, bkg_img: np.array, ovly_img: np.array):
-        # Ensure background image is in BGRA format
+
+    def imageOverlay(self, bkg_img: np.array, fg_img: np.array) -> np.array:
+        # Ensure both images are in BGRA format
         if len(bkg_img.shape) == 2:
             bkg_img = cv2.cvtColor(bkg_img, cv2.COLOR_GRAY2BGRA)
         elif bkg_img.shape[2] == 3:
             bkg_img = cv2.cvtColor(bkg_img, cv2.COLOR_BGR2BGRA)
 
-        # Ensure overlay image is in BGRA format
-        if ovly_img.shape[2] == 3:
-            ovly_img = cv2.cvtColor(ovly_img, cv2.COLOR_BGR2BGRA)
+        if len(fg_img.shape) == 2:
+            fg_img = cv2.cvtColor(fg_img, cv2.COLOR_GRAY2BGRA)
+        elif fg_img.shape[2] == 3:
+            fg_img = cv2.cvtColor(fg_img, cv2.COLOR_BGR2BGRA)
 
-        # Extract the alpha channel from the overlay image
-        alpha_channel = ovly_img[:, :, 3]
+        # Extract the alpha channel of the foreground
+        alpha = fg_img[:, :, 3] / 255.0
+        alpha_inv = 1.0 - alpha
 
-        # Create an inverse alpha mask
-        inv_alpha = cv2.bitwise_not(alpha_channel)
-        alpha2i = cv2.cvtColor(inv_alpha, cv2.COLOR_GRAY2BGRA)/255.0
+        # Overlay the foreground on top of the background
+        overlay = np.zeros_like(bkg_img, dtype=np.uint8)
+        overlay[:, :, :3] = (fg_img[:, :, :3] * alpha[:, :, None] + bkg_img[:, :, :3] * alpha_inv[:, :, None]).astype(np.uint8)
+        overlay[:, :, 3] = bkg_img[:, :, 3]  # Preserve the background alpha
 
-        # Perform blending and limit pixel values to 0-255 (convert to 8-bit)
-        return cv2.convertScaleAbs(ovly_img*(1-alpha2i) + bkg_img*alpha2i)
+        return overlay

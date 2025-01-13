@@ -105,6 +105,8 @@ class SoundCamConnector(object):
         self.connected = False
         self.is_alive = False
         self.socket_instances_singleton = False
+        self.blob_data = list()
+        self.blobLock = Lock()
         self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.leakRate:MDLeakRateData = MDLeakRateData(0, 0, 0, 0, 0)
 
@@ -1256,7 +1258,12 @@ class SoundCamConnector(object):
     
     ''' Returns the current blob data '''
     def getBlobData(self):
-        return self.scamUtils.p_getBlobData()
+        with self.blobLock:
+            return self.blob_data
+        
+    def drawRect(self, frame: np.array):
+        with self.blobLock:
+            return self.objTracker.drawDetections(blob_data=self.blob_data, frame=frame.copy(), getResult=True)
     
     ''' Returns the signal analysis in the Spectrum 
         NamedTuple: Mean Energy, Std Dev, High Energy Thresh, Current Energy, Low Energy Thresh, SNR, 
@@ -1300,48 +1307,46 @@ class SoundCamConnector(object):
         if cv2.waitKey(1) == ord('q'):
             exit(-99)
 
-    '''Visualizes Acoustic Video'''
-    def visualizeACVideo(self, frame, getResult=False):
-        if(frame is None):
+    '''Visualizes Acoustic Video''' 
+    def visualizeACVideo(self, frame: np.array, getResult: bool = False) -> np.array:
+        if frame is None:
             return None
-        truth_tbl = np.where(frame[:,:] == 0.0, True, False)
-        frame *= 255
-        try:
-            frame = frame.astype('uint8')
-        except Exception as e:
-            pass
-        mimg = np.zeros((48, 64, 3), dtype=np.uint8)
-        cv2.applyColorMap(frame, cv2.COLORMAP_JET, mimg)
-        mimga = cv2.cvtColor(mimg, cv2.COLOR_RGB2RGBA)
-        mimga[truth_tbl, 3] = 0
 
-        #kernel = np.ones((8,8),np.float32)/64
-        #filt_img = cv2.filter2D(mimga,-1,kernel)
-        #filt_img = cv2.GaussianBlur(mimga, (5,5), 0)
-        rimg_up = cv2.resize(mimga, 
-                                (self.cfgObj['camera_W'], self.cfgObj['camera_H']), 
-                                interpolation= cv2.INTER_AREA)
-        boxes_ids:list = self.objTracker.detection(rimg_up, track=False)
-        blobData = []
-        if(boxes_ids is not None):
-            if(len(boxes_ids) == 0):
-                self.objTracker.resetIdCount()
-            else:
-                blobData = boxes_ids[0]
-                #print("Detection: {0}".format(boxes_ids))
-                for box_id in boxes_ids:
-                    x,y,w,h,A = box_id
-                    if(A > blobData[4]):
-                        blobData = box_id
-            # print("Detection x-y: {0}".format(blobData))
-            # print("Has Positive Detection? {0}".format(self.hasDetection()))
-        if(getResult):
-            #update blobData
-            self.scamUtils.updateBlobData(blobData)
-            return rimg_up
-        cv2.namedWindow("Acoustic Video", cv2.WINDOW_AUTOSIZE)
-        #bimg_up = cv2.GaussianBlur(rimg_up, (5,5), 0)
-        cv2.imshow('Acoustic Video', rimg_up)
+        # Scale frame values and apply colormap
+        frame = (frame * 255).astype('uint8')
+        color_frame = cv2.applyColorMap(frame, cv2.COLORMAP_JET)
+
+        # Convert to RGBA for transparency handling
+        # alpha_frame = cv2.cvtColor(color_frame, cv2.COLOR_RGB2RGBA)
+        # alpha_frame[frame == 0, 3] = 0
+
+        # Convert to RGBA for transparency handling
+        rgba_frame = cv2.cvtColor(color_frame, cv2.COLOR_RGB2RGBA)
+
+        # Dynamically adjust alpha values based on intensity
+        intensity = frame.astype(np.float32)  # Use the original frame for intensity
+        alpha_values = np.interp(intensity, (0, 255), (0, 220)).astype(np.uint8)
+        rgba_frame[:, :, 3] = alpha_values  # Set the alpha channel
+
+        # Resize the image
+        resized_frame = cv2.resize(rgba_frame, (self.cfgObj['camera_W'], self.cfgObj['camera_H']), interpolation=cv2.INTER_CUBIC)
+        with self.blobLock:
+            # Blob detection and selecting the largest blob
+            self.blob_data = self.objTracker.detection(resized_frame, track=True)
+            # draw on Image
+            resized_frame = self.objTracker.drawDetections(blob_data=self.blob_data, frame=resized_frame.copy(), getResult=True)
+        if (len(self.blob_data) == 0):
+            self.objTracker.resetIdCount()
+        else:
+            #largest_blob = max(blob_data, key=lambda blob: blob.Area)
+            #print("Detection x-y: {0}".format(largest_blob))
+            pass
+
+        if getResult:
+            return resized_frame
+
+        # Show the image
+        cv2.imshow("Acoustic Video", resized_frame)
         if cv2.waitKey(1) == ord('q'):
             exit(-99)
     

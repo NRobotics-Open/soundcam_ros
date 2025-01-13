@@ -12,7 +12,7 @@ from geometry_msgs.msg import Pose
 from std_msgs.msg import Bool
 from soundcam_ros.msg import SoundcamStatus, SoundcamDetection, \
     SoundcamAction, SoundcamFeedback, SoundcamGoal, SoundcamResult, \
-    Preset
+    Preset, Blob
 from soundcam_ros.srv import SoundcamService, SoundcamServiceRequest, \
     SoundcamServiceResponse
 from sensor_msgs.msg import CompressedImage, CameraInfo
@@ -21,11 +21,12 @@ import actionlib, threading, numpy as np
 from cv_bridge import CvBridge
 from soundcam_protocol import Features, Status, MDLeakRateData
 from utils_ROS import ROSLayerUtils, MissionData
-from utils import SignalInfo
+from utils import SignalInfo, BlobInfo
 from datetime import datetime
 import cv2
 import pyfakewebcam as pf
 from threading import Event, Thread, Lock
+from typing import List
 
 class SoundcamROS(object):
     def __init__(self) -> None:
@@ -323,7 +324,7 @@ class SoundcamROS(object):
             rate.sleep()
     
     ''' Sends alert to other nodes about current detections '''
-    def publishDetection(self, sigInfo:SignalInfo, blobCoords:list):
+    def publishDetection(self, sigInfo:SignalInfo, blobCoords:List[BlobInfo]):
         if(self.detection_pub.get_num_connections() > 0):
             msg = SoundcamDetection()
             msg.header.frame_id = self.cfg['frame']
@@ -338,7 +339,10 @@ class SoundcamROS(object):
             msg.acousticEnergy.data = sigInfo.acoustic_energy
             msg.preActivation.data = sigInfo.pre_activation
             msg.detection.data = sigInfo.detection
-            msg.blobXY = blobCoords
+            if(len(blobCoords) > 0):
+                for dt in blobCoords:
+                    blob:Blob = Blob(**dt._asdict())
+                    msg.blobs.append(blob)
             self.detection_pub.publish(msg)
             if(self.debug):
                 rospy.loginfo_throttle(3, 'SC| Published detection status')
@@ -429,7 +433,8 @@ class SoundcamROS(object):
             if((bw_img is not None) and (ac_img is not None)):
                 self.bw_img = bw_img
                 self.ac_img = ac_img
-                self.overlayed_img = self.utils.imageOverlay(self.bw_img, self.ac_img)
+                self.overlayed_img = self.camera.drawRect(frame=self.utils.imageOverlay(self.bw_img, self.ac_img))
+                return self.overlayed_img
             else:
                 return self.overlayed_img
         
@@ -1090,7 +1095,7 @@ class SoundcamROS(object):
                     print('Camera Status (attemptconnection): ', status)
 
                     if((status.isConnectedHost == 0)):
-                        if(self.camera.reconnect(max_retries=3)):
+                        if(self.camera.reconnect(max_retries=2)):
                             rospy.loginfo('Connection established!')
                             while(not self.camera.hasStatus()):
                                 rospy.loginfo_throttle(1.5, 'Awaiting hasStatus() ...')

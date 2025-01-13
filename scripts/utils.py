@@ -65,7 +65,6 @@ class SoundUtils():
         self.minScale = None
         self.crestVal = 5    #dB
         self.scalingMode = scalingMode
-        self.blobData = []
         self.hasDetection = False
 
         #SIGNAL Detection
@@ -106,12 +105,6 @@ class SoundUtils():
     
     def p_getFrequencies(self):
         return self.frequencies
-    
-    ''' Methods for updating and fetching blob data '''
-    def p_getBlobData(self):
-        return self.blobData
-    def updateBlobData(self, val:list):
-        self.blobData = val.copy()
     
     '''
         Initializes the shared memory buffers
@@ -461,6 +454,13 @@ class SoundUtils():
 '''
 -----------------------------------------EUCLIDEAN DISTANCE TRACKER
 '''
+from typing import List
+BlobInfo = NamedTuple('BlobInfo', 
+                        [('id', float), 
+                         ('x', float), ('y', float),
+                         ('width', float), ('height', float),
+                         ('cx', float), ('cy', float),
+                         ('Area', float)])
 class EuclideanDistTracker:
     def __init__(self):
         # Store the center positions of the objects
@@ -472,42 +472,57 @@ class EuclideanDistTracker:
     
     def resetIdCount(self):
         self.id_count = 0
+    
+    def filterDetectionsByID(self, blob_data: List[BlobInfo]) -> List[BlobInfo]:
+        # Use a dictionary to keep track of the largest blob for each ID
+        largest_blobs = {}
 
-    def update(self, objects_rect):
+        for blob in blob_data:
+            # If the ID is not in the dictionary or if the new blob has a larger area, update the dictionary
+            if blob.id not in largest_blobs or blob.Area > largest_blobs[blob.id].Area:
+                largest_blobs[blob.id] = blob
+
+        # Return the largest blob for each unique ID
+        return list(largest_blobs.values())
+
+    def update(self, objects_rect:list):
         # Objects boxes and ids
         objects_bbs_ids = []
 
         # Get center point of new object
-        for rect in objects_rect:
-            x, y, w, h, A = rect
-            cx = (x + x + w) // 2
-            cy = (y + y + h) // 2
+        for obj in objects_rect:
+            blob = BlobInfo(*obj)._asdict()
+            blob['cx'] = (blob['x'] + blob['x'] + blob['width']) // 2
+            blob['cy'] = (blob['y'] + blob['y'] + blob['height']) // 2
 
             # Find out if that object was detected already
             same_object_detected = False
             for id, pt in self.center_points.items():
-                dist = math.hypot(cx - pt[0], cy - pt[1])
+                dist = math.hypot(blob['cx'] - pt[0], blob['cy'] - pt[1])
 
-                if dist < 50:
-                    self.center_points[id] = (cx, cy)
+                #print('distance: ', dist)
+                if dist < 200:
+                    self.center_points[id] = (blob['cx'], blob['cy'])
                     # print('Center points: ', self.center_points)
                     # print('Dist: ', dist)
-                    objects_bbs_ids.append([x, y, w, h, id, A])
+                    #objects_bbs_ids.append([x, y, w, h, id, A])
+                    blob['id'] = id
+                    objects_bbs_ids.append(BlobInfo(**blob))
                     same_object_detected = True
                     break
 
             # New object is detected we assign the ID to that object
-            if same_object_detected is False:
-                self.center_points[self.id_count] = (cx, cy)
-                objects_bbs_ids.append([x, y, w, h, self.id_count, A])
+            if not same_object_detected:
+                self.center_points[self.id_count] = (blob['cx'], blob['cy'])
+                blob['id'] = self.id_count
+                objects_bbs_ids.append(BlobInfo(**blob))
                 self.id_count += 1
 
         # Clean the dictionary by center points to remove IDS not used anymore
         new_center_points = {}
         for obj_bb_id in objects_bbs_ids:
-            _, _, _, _, object_id, _ = obj_bb_id
-            center = self.center_points[object_id]
-            new_center_points[object_id] = center
+            center = self.center_points[obj_bb_id.id]
+            new_center_points[obj_bb_id.id] = center
 
         # Update dictionary with IDs not used removed
         self.center_points = new_center_points.copy()
@@ -516,16 +531,11 @@ class EuclideanDistTracker:
     def detection(self, frame, track=True):
         if(self.prev_frame is None):
             self.prev_frame = frame.copy()
-            return None
-        diff = cv2.absdiff(self.prev_frame, frame)  # this method is used to find the difference bw two  frames
-        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+            return []
+        #diff = cv2.absdiff(self.prev_frame, frame)  # this method is used to find the difference bw two  frames
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5,5), 0 )
-        # here i would add the region of interest to count the single lane cars 
-        # height, width = blur.shape
-        # print(height, width)
-        
 
-        # thresh_value = cv2.getTrackbarPos('thresh', 'trackbar')
         _, threshold = cv2.threshold(blur, 23, 255, cv2.THRESH_BINARY)
         dilated = cv2.dilate(threshold, (1,1), iterations=1)
         contours, _, = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -537,26 +547,35 @@ class EuclideanDistTracker:
             contourArea = cv2.contourArea(contour)
             if (contourArea < 1000):
                 continue
-            #print('Area is: ', contourArea)
-            detections.append([x,y,w,h, contourArea])
-
-            # cv2.rectangle(frame1, (x,y),(x+w, y+h), (0,255,0), 2)
-            # cv2.putText(frame1, 'status: movement',(10,20), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2, cv2.LINE_AA)
-
-        
-        # cv2.drawContours(frame1,contours, -1, (0,255,0), 2)
-        # cv2.imshow('frame',frame1)
+            detections.append(BlobInfo(0, x, y, w, h, 0, 0, contourArea))
         self.prev_frame = frame
+        detections = self.filterDetectionsByID(detections)
         if(track):
             # object tracking 
             return self.update(detections)
         return detections
     
-    def drawDetections(self, boxes_ids:list, frame: np.array, getResult=False):
-        for box_id in boxes_ids:
-            x,y,w,h,id = box_id
-            cv2.putText(frame, str(id),(x,y-15), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
-            cv2.rectangle(frame, (x,y),(x+w, y+h), (0,255,0), 2)
-            if(getResult):
+    def drawDetections(self, blob_data: list, frame: np.array, getResult=False):
+        # Ensure frame is valid
+        if frame is None or len(frame.shape) != 3:
+            return
+
+        if len(blob_data) > 0:
+            for blob in blob_data:
+                # Convert coordinates to integers
+                x, y, width, height = int(blob.x), int(blob.y), int(blob.width), int(blob.height)
+
+                # Draw blob ID
+                cv2.putText(frame, str(blob.id), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+                # Draw rectangle
+                cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 255, 0), 1)
+
+            if getResult:
                 return frame
-            cv2.imshow('frame',frame)
+
+            # Show the image
+            cv2.imshow('frame', frame)
+            cv2.waitKey(1)  # Ensure window refreshes
+        else:
+            return frame
