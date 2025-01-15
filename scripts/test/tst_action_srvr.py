@@ -15,9 +15,9 @@ if __name__ == '__main__':
 
         goal = SoundcamGoal()
         goal.parameters.append(KeyValue(key='uuid', value=str(uuid.uuid4())))
-        goal.parameters.append(KeyValue(key='delay', value=str(0)))
-        goal.parameters.append(KeyValue(key='numCaptures', value=str(2)))
-        goal.parameters.append(KeyValue(key='recordTime', value=str(10))) #seconds
+        goal.parameters.append(KeyValue(key='delay', value=str(1)))
+        goal.parameters.append(KeyValue(key='numCaptures', value=str(1)))
+        goal.parameters.append(KeyValue(key='recordTime', value=str(15))) #seconds
         goal.parameters.append(KeyValue(key='mediaType', value=''))
         goal.parameters.append(KeyValue(key='missionId', value=str(16)))
         goal.parameters.append(KeyValue(key='missionName', value='test-snapshot'))
@@ -25,6 +25,8 @@ if __name__ == '__main__':
         goal.parameters.append(KeyValue(key='waypointX', value=str(1.19)))
         goal.parameters.append(KeyValue(key='waypointY', value=str(0.98)))
         goal.parameters.append(KeyValue(key='waypointTheta', value=str(90.0)))
+        goal.parameters.append(KeyValue(key='imageTileNo', value=str(0)))
+        goal.parameters.append(KeyValue(key='currentLoop', value=str(0)))
 
         rospy.loginfo('Sending Snapshot goal!')
         client.send_goal(goal)

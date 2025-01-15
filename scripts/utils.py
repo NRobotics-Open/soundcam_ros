@@ -55,6 +55,8 @@ class SoundUtils():
         self.window = window
         self.minFreq = minFreq
         self.maxFreq = maxFreq
+        if(detectionWin >= window):
+            detectionWin = int(window * 0.5)
         self.detectionWindow = detectionWin
         self.cnt = 0
         self.accnt = 0
@@ -87,7 +89,7 @@ class SoundUtils():
         self.energy_skip = self.smoothing_window * self.energy_sz
         self.sig_data:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.isReady = False
-
+        self.isFirstRun = True
     '''
         Class member variable getters
     '''
@@ -270,7 +272,8 @@ class SoundUtils():
         noise = noise.reshape(-1, 1)
         self.noiseBuffer[-self.energy_sz:, :] = self.smoothEnergy(noise).reshape(-1,1)
         if(self.isReady):
-            self.sig_data = self._detectEvent(self.energyBuffer, self.noiseBuffer)
+            self.sig_data = SignalInfo(*self._detectEvent(self.energyBuffer, self.noiseBuffer))
+            #print(self.sig_data)
     
     def smoothEnergy(self, energies): # Simple moving average for smoothing returns array of shape (1019,)
         return np.convolve(np.ravel(energies), np.ones(self.smoothing_window)/self.smoothing_window, mode='valid')
@@ -329,8 +332,6 @@ class SoundUtils():
         #     ac_snr = 0.0
         ac_energy = np.sum(self.acousticBuffer[-3072:])
         # print("Ac SNR --- ", ac_snr)
-        # if(ac_energy != 0.0):
-        #     print(f"acoustic-energy = {ac_energy}")
 
         # Step 5: Compute SNR w Noise 
         noise_mean = np.nanmean(noise)
@@ -342,7 +343,11 @@ class SoundUtils():
         # Step 6: Compute the dynamic threshold and apply hysteresis logic
         #high_threshold, low_threshold = self.dynamicThreshold(mean_energy, std_energy, snr)
         high_threshold, low_threshold = self.dynamicThreshold2(mean_energy, std_energy, snr, use_snr=True)
-
+        # if(ac_energy != 0.0):
+        #     print(f"hi-thresh = {high_threshold}")
+        #     print(f"acoustic-energy = {ac_energy}")
+        #     print(f"current-energy = {current_energy}")
+        #     print(f"low-thresh = {low_threshold}\n")
         #if(self.debug):
         
         
@@ -352,18 +357,27 @@ class SoundUtils():
                 self.previous_detection = False  # Reset detection
                 self.pre_activation = False
                 self.timer_set = False
-                if(self.debug):
-                    print("\n\n--------------------------------Resetting detection!")
+                #if(self.debug):
+                print("\n\n--------------------------------Resetting detection!")
+            # else:
+            #     print("\n\n--------------------------------detection running")
         else:
+            if(self.isFirstRun):
+                self.isFirstRun = False
+                self.trigger_time = time.time()
+                return SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
             # Check if current energy exceeds the high threshold to trigger a new detection
-            if ((ac_energy >= self.trigger_thresh) or (current_energy > high_threshold)):
+            if ((ac_energy >= self.trigger_thresh)): #or (current_energy > high_threshold)
                 self.pre_activation = True
                 self.elapsed_t = time.time()-self.trigger_time
-                #print("Elapsed: ", self.elapsed_t)
                 if(self.elapsed_t >= self.trigger_duration):
                     self.previous_detection = True
-                    if(self.debug):
-                        print("\n\n++++++++++++++++++++++++++++++++Triggering detection!")
+                    #if(self.debug):
+                    print("Elapsed: ", self.elapsed_t)
+                    print("\n\n++++++++++++++++++++++++++++++++Triggering detection!")
+                    # print('acoustic: ', ac_energy)
+                    # print('cur energy: ', current_energy)
+                    # print('hi thresh: ', high_threshold)
             else: 
                 self.trigger_time = time.time()
                 self.pre_activation = False
@@ -456,11 +470,11 @@ class SoundUtils():
 '''
 from typing import List
 BlobInfo = NamedTuple('BlobInfo', 
-                        [('id', float), 
-                         ('x', float), ('y', float),
-                         ('width', float), ('height', float),
-                         ('cx', float), ('cy', float),
-                         ('Area', float)])
+                        [('id', int), 
+                         ('x', int), ('y', int),
+                         ('width', int), ('height', int),
+                         ('cx', int), ('cy', int),
+                         ('Area', int)])
 class EuclideanDistTracker:
     def __init__(self):
         # Store the center positions of the objects
@@ -501,7 +515,7 @@ class EuclideanDistTracker:
                 dist = math.hypot(blob['cx'] - pt[0], blob['cy'] - pt[1])
 
                 #print('distance: ', dist)
-                if dist < 200:
+                if dist < 300:
                     self.center_points[id] = (blob['cx'], blob['cy'])
                     # print('Center points: ', self.center_points)
                     # print('Dist: ', dist)
@@ -545,9 +559,9 @@ class EuclideanDistTracker:
         for contour in contours:
             (x,y,w,h) = cv2.boundingRect(contour)
             contourArea = cv2.contourArea(contour)
-            if (contourArea < 1000):
+            if (contourArea < 500):
                 continue
-            detections.append(BlobInfo(0, x, y, w, h, 0, 0, contourArea))
+            detections.append(BlobInfo(0, x, y, w, h, 0, 0, int(contourArea)))
         self.prev_frame = frame
         detections = self.filterDetectionsByID(detections)
         if(track):

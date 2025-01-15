@@ -1,7 +1,7 @@
 std_msgs/Header header
 
 soundcam_ros/Preset preset
-soundcam_ros/Blob blobs
+soundcam_ros/Blob[] blobs
 std_msgs/Float32 meanEnergy
 std_msgs/Float32 stddev
 std_msgs/Float32 highEnergyThreshold

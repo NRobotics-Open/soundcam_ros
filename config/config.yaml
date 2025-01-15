@@ -12,8 +12,8 @@ gui_port: 65432
 
 #Streaming parameters
 distance: 3500 #mm
-minFrequency: 10000
-maxFrequency: 100000
+minFrequency: 40000
+maxFrequency: 72600
 camera_W: 640
 camera_H: 480
 acimageFPS: 80 #fps
@@ -61,7 +61,7 @@ dynamic_thresh_factor: 8 #set lower to make the trigger more sensitive
 hi_thresh_factor: 3.5 #set lower to make the trigger more sensitive
 low_thresh_factor: 2.7 # set higher to make the detector sensitive to signal loss/disappearance -> hystheresis
 smoothing_win: 5 # how many data samples to use for smoothing the signal
-trigger_duration: 2.0 #seconds
+trigger_duration: 1.0 #seconds
 trigger_threshold: 9
 
 ## ROS PARAMETERS

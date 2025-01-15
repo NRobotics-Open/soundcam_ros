@@ -63,7 +63,7 @@ class SoundcamROS(object):
         self._auto_audio_frames_ls = list()
         self.streamType = SoundcamServiceRequest.OVERLAY_STREAM
         self.manualTrigger = False
-        self.recordTrigger = False
+        self.recordTrigger = Event()
         self.pauseContinuous = False
         self.devStr = list()
         self.pubDevStream = self.cfg['publish_dev']
@@ -113,8 +113,10 @@ class SoundcamROS(object):
             if(self.cfg['processVideo']):
                 self.vidbw_pub = rospy.Publisher(self.cfg['frame'] + '/video/bw/compressed', CompressedImage, queue_size=15)
                 thread_grp.append(threading.Thread(target=self.videoPublishing, 
-                                        args=[self.vidbw_pub, SoundcamServiceRequest.VIDEO_STREAM, 
-                                                self.devStr[0]], 
+                                        args=[self.vidbw_pub, SoundcamServiceRequest.VIDEO_STREAM], 
+                                        daemon=True))
+                thread_grp.append(threading.Thread(target=self.devStreamPublishing, 
+                                        args=[SoundcamServiceRequest.VIDEO_STREAM, self.devStr[0]], 
                                         daemon=True))
             if(self.cfg['processThermal']):
                 self.vidthm_pub = rospy.Publisher(self.cfg['frame'] + '/video/thermal/compressed', CompressedImage, queue_size=15)
@@ -226,7 +228,20 @@ class SoundcamROS(object):
         if(self.debug):
             rospy.loginfo_throttle(3, 'SC| Sent status msg')
 
-    def videoPublishing(self, pub:rospy.Publisher, streamType, devStrObj:pf.FakeWebcam=None):
+    def devStreamPublishing(self, streamType, devStrObj:pf.FakeWebcam=None):
+        pub_rate = self.cfg['videoFPS']
+        rate = rospy.Rate(pub_rate)
+        while(not rospy.is_shutdown() and self.canRun.is_set()):
+            frame = self._getFrame(streamType=streamType)
+            if(frame is not None):
+                # Publish to DEV
+                if(self.pubDevStream and devStrObj is not None and 
+                   (streamType == SoundcamServiceRequest.VIDEO_STREAM)):
+                    processed_frame = self.utils.publishDevStream(frame)
+                    devStrObj.schedule_frame(processed_frame)
+            rate.sleep()
+
+    def videoPublishing(self, pub:rospy.Publisher, streamType):
         pub_rate = 30.0
         if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
             pub_rate = self.cfg['videoFPS']
@@ -237,28 +252,22 @@ class SoundcamROS(object):
             if(not self.pauseContinuous):
                 frame = self._getFrame(streamType=streamType)
                 if(frame is not None):
-                    # Publish to DEV
-                    if(self.pubDevStream and devStrObj is not None and 
-                       (streamType == SoundcamServiceRequest.VIDEO_STREAM)):
-                        processed_frame = self.utils.publishDevStream(frame)
-                        devStrObj.schedule_frame(processed_frame)
-
                     # MANUAL stream recording
                     if(self.manualTrigger and (self.streamType == streamType)):
                         self._manual_frames_ls.append(frame)
                         self.utils.limitMemUsage(self._manual_frames_ls, self.cfg['max_megabytes'])
                     
                     # # AUTO stream recording
-                    if(self.recordTrigger):
+                    if(self.recordTrigger.is_set()):
                         if(streamType == SoundcamServiceRequest.VIDEO_STREAM):
                             self._auto_bw_frames_ls.append(frame)
-                            self.utils.limitMemUsage(self._auto_bw_frames_ls, self.cfg['max_megabytes'])
+                            #self.utils.limitMemUsage(self._auto_bw_frames_ls, self.cfg['max_megabytes'])
                         elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
                             self._auto_tm_frames_ls.append(frame)
-                            self.utils.limitMemUsage(self._auto_tm_frames_ls, self.cfg['max_megabytes'])
+                            #self.utils.limitMemUsage(self._auto_tm_frames_ls, self.cfg['max_megabytes'])
                         elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
                             self._auto_overlay_frames_ls.append(frame)
-                            self.utils.limitMemUsage(self._auto_overlay_frames_ls, self.cfg['max_megabytes'])
+                            #self.utils.limitMemUsage(self._auto_overlay_frames_ls, self.cfg['max_megabytes'])
 
                     if(pub.get_num_connections() > 0): # topic publishing
                         # if(self.debug):
@@ -267,7 +276,7 @@ class SoundcamROS(object):
             rate.sleep()
     
     def audioPublishing(self, pub:rospy.Publisher, pubinfo:rospy.Publisher, fn, fninfo):
-        rate = rospy.Rate(40)
+        rate = rospy.Rate(100)
         msg = AudioDataStamped()
         msg.header.frame_id = self.cfg['frame']
         msginfo = AudioInfo()
@@ -279,8 +288,8 @@ class SoundcamROS(object):
             if(self.manualTrigger):
                 self._manual_audio_frames_ls.append(aud_arr)
                 self.utils.limitMemUsage(self._manual_audio_frames_ls, self.cfg['max_megabytes'])
-
-            if(self.recordTrigger):
+            
+            if(self.recordTrigger.is_set()):
                 self._auto_audio_frames_ls.append(aud_arr)
             
             if(pub.get_num_connections() > 0):
@@ -428,15 +437,17 @@ class SoundcamROS(object):
             else:
                 return self.ac_img
         elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
-            bw_img = self.camera.getBWVideo()
-            ac_img = self.camera.getACVideo()
-            if((bw_img is not None) and (ac_img is not None)):
-                self.bw_img = bw_img
-                self.ac_img = ac_img
-                self.overlayed_img = self.camera.drawRect(frame=self.utils.imageOverlay(self.bw_img, self.ac_img))
-                return self.overlayed_img
-            else:
-                return self.overlayed_img
+            # bw_img = self.camera.getBWVideo()
+            # ac_img = self.camera.getACVideo()
+            # if((bw_img is not None) and (ac_img is not None)):
+            #     self.bw_img = bw_img
+            #     self.ac_img = ac_img
+            #     self.overlayed_img = self.camera.drawRect(frame=self.utils.imageOverlay(self.bw_img, self.ac_img))
+            #     return self.overlayed_img
+            # else:
+            #     return self.overlayed_img
+            self.overlayed_img = self.camera.drawRect(frame=self.utils.imageOverlay(self.bw_img, self.ac_img))
+            return self.overlayed_img
         
 
 
@@ -584,7 +595,7 @@ class SoundcamROS(object):
                     rospy.logerr_throttle(1, 'SC| Manual Recording failure!')
                 return False
         else: # auto recording save
-            self.recordTrigger = False
+            self.recordTrigger.clear()
             try:
                 auto_elapsed_t = time.time() - start_t
                 if(auto_elapsed_t >= self.cfg['min_record_time']):
@@ -600,22 +611,26 @@ class SoundcamROS(object):
                         filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
                         self.utils.createVideoFromFrames(self._auto_bw_frames_ls, filename)
                         media.append(filename)
+                        print('add BW')
 
                         sfx = ''.join(['THM_', str(tileInfo.id)])
                         filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
                         self.utils.createVideoFromFrames(self._auto_tm_frames_ls, filename)
                         media.append(filename)
+                        print('add THM')
 
                         sfx = ''.join(['OV_', str(tileInfo.id)])
                         filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
                         self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, filename)
                         media.append(filename)
+                        print('add OV')
 
                         filename = 'AUD_' + timestamp + '.wav'
                         self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
                                                         self.camera.getAudioInfo()['sample_rate'], 
                                                         filename)
                         media.append(filename)
+                        print('add AUD')
 
                     elif(streamType == SoundcamServiceRequest.VIDEO_STREAM):
                         sfx = ''.join(['BW_', str(tileInfo.id)])
@@ -657,6 +672,8 @@ class SoundcamROS(object):
                             sigInfo=SignalInfo(*sigInfo),
                             isActionPoint=isActPoint,
                             relevantIdx=tileInfo.relId,
+                            preset=self.curPreset,
+                            loop=self.curLoop,
                             useMsnPath=True)
                     self.publishCaptureFeedback(self.capture_pub)
                 else:
@@ -923,6 +940,8 @@ class SoundcamROS(object):
                         tile_i = self.tileInfo._asdict()
                         tile_i['relId'] = tile_i['id']
                         self.tileInfo = ROSLayerUtils.TileInfo(**tile_i)
+                
+                self.past_sig_i = SignalInfo(**prv_siginfo)
             else:
                 time.sleep(0.1)
             
@@ -944,7 +963,7 @@ class SoundcamROS(object):
             #save detection/recording parameters
             tmp_autoDetect = self.autoDetect
             self.autoDetect = False
-            self.recordTrigger = False #deactivate record triggers
+            self.recordTrigger.clear() #deactivate record triggers
             
             #extract parameters
             rospy.loginfo('Extracting goal parameters ...')
@@ -1023,8 +1042,8 @@ class SoundcamROS(object):
                         result = True
                         break
                 elif((recordTime > self.cfg['min_record_time']) and (numCaptures > 0)): #Make Video Recordings
-                    if(not self.recordTrigger): #start recording
-                        self.recordTrigger = True
+                    if(not self.recordTrigger.is_set()): #start recording
+                        self.recordTrigger.set()
                         record_start_t = time.time()
                     else: #while recording
                         if((time.time()-record_start_t) >= recordTime): #save recording
@@ -1037,11 +1056,13 @@ class SoundcamROS(object):
                                                 wpInfo=wpInfo,
                                                 sigInfo=SignalInfo(*self.past_sig_i),
                                                 tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo))
+                                    cnt += 1
                             if(res):
-                                cnt += 1
                                 with self.signalLock:
                                     self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
                                 time.sleep(delay)
+                            else:
+                                break
                         
                         if(cnt > numCaptures):
                             result = True
@@ -1133,7 +1154,6 @@ class SoundcamROS(object):
         disconnect_ev = False
         prevPose = [0.0, 0.0, 0.0]
         firstrun = True
-
         alive_t = time.time()
 
         while(not rospy.is_shutdown()):
@@ -1151,16 +1171,16 @@ class SoundcamROS(object):
                 if(self.missionData.id != 0): #only perform auto-detection when explicitly required
                     if(self.autoDetect):
                         #Collect highest signal info during recording
-                        if(self.recordTrigger):
+                        if(self.recordTrigger.is_set()):
                             self.runCmp.set()
                         
                         #Begin collecting frames before valid detection is confirmed
                         if(self.signalInfo.pre_activation and 
                            not self.signalInfo.detection and 
-                           not self.recordTrigger and
+                           not self.recordTrigger.is_set() and
                            (self.utils.calcEuclidDistance(prevPose, self.curPose) >= self.cfg['rest_dist'])):
                             rospy.loginfo('SC| Pre-Starting AUTO recording ...')
-                            self.recordTrigger = True
+                            self.recordTrigger.set()
                             has_updated_record_start_t = False
                             prevPose = self.curPose
                             self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
@@ -1171,7 +1191,7 @@ class SoundcamROS(object):
                                 rospy.loginfo('SC| Updated recording start time ...')
                                 has_updated_record_start_t = True
 
-                            if(self.recordTrigger and ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
+                            if(self.recordTrigger.is_set() and ((time.time()-record_start_t)) >= (self.curCaptureTime * self._f_mul)):
                                 rospy.loginfo('SC| Saving AUTO recording [Autodetect| reason: Timeout] ...')
                                 self.prepareMissionDirectory()
                                 self._saveRecording(auto=True, start_t=record_start_t, 
@@ -1179,7 +1199,7 @@ class SoundcamROS(object):
                                                     sigInfo=SignalInfo(*self.past_sig_i))
                                 prevPose = self.curPose
                         
-                        if(not self.signalInfo.detection and self.recordTrigger):
+                        if(not self.signalInfo.detection and self.recordTrigger.is_set()):
                             rospy.loginfo('SC| Saving AUTO recording [Autodetect| reason: Deactivation] ...')
                             self.prepareMissionDirectory()
                             self._saveRecording(auto=True, start_t=record_start_t, 

@@ -79,6 +79,22 @@ class ROSLayerUtils(object):
         else:
             return self.mediaDir
     
+    def convert_numpy_types(self, data):
+        if isinstance(data, dict):
+            return {key: self.convert_numpy_types(value) for key, value in data.items()}
+        elif isinstance(data, list):
+            return [self.convert_numpy_types(item) for item in data]
+        elif isinstance(data, np.ndarray):
+            return data.tolist()
+        elif isinstance(data, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64)):
+            return int(data)
+        elif isinstance(data, (np.float_, np.float16, np.float32, np.float64)):
+            return float(data)
+        elif isinstance(data, (np.bool_)):
+            return bool(data)
+        else:
+            return data
+    
     def addMetaData(self, wpInfo:WaypointInfo, media:list, sigInfo:SignalInfo, isActionPoint=False, 
                     preset:Preset=None, loop=1, relevantIdx:int=0, leakRate:float=0.0, useMsnPath=False):
         try:
@@ -94,56 +110,55 @@ class ROSLayerUtils(object):
                                                 *sigInfo,
                                                 False, int(relevantIdx), float(leakRate), 
                                                 *preset_dt)
+            obj = self.convert_numpy_types(obj._asdict())
             path = self.getPath(fetchMsnDir=useMsnPath)
             loop = str(loop)
             #print('Current Loop is: ', loop)
             if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
                 with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
                     self.metaData = yaml.safe_load(infofile)
+                    print('MetaData: ', self.metaData)
                     #check by the current loop
-                    if(loop not in self.metaData.keys()):
+                    if((self.metaData is not None) and (loop not in self.metaData.keys())):
                         self.metaData[loop] = {'datapoints':[], 'actionpoints':[]}
             else:
                 self.metaData = dict({loop: {'datapoints':[], 'actionpoints':[]}})
 
+            def updateDict(existing_obj, cur_obj):
+                existing_obj['acoustic_energy'] = cur_obj['acoustic_energy']
+                existing_obj['current_energy'] = cur_obj['current_energy']
+                existing_obj['detection'] = cur_obj['detection']
+                existing_obj['mean_energy'] = cur_obj['mean_energy']
+                existing_obj['relevant_image'] = cur_obj['relevant_image']
+                existing_obj['snr'] = cur_obj['snr']
+                existing_obj['std_dev'] = cur_obj['std_dev']
+                existing_obj['leak_rate'] = cur_obj['leak_rate']
+                return existing_obj
+        
             hasId = False
             if(isActionPoint):
                 for obj_old in self.metaData[loop]['actionpoints']: #check if actionpoint in metadata
                     if(obj_old['id'] == wpInfo.id):
                         hasId = True
-                        for dt in obj.media:
+                        for dt in obj['media']:
                             obj_old['media'].append(dt)
                             # update signal Parameters
-                            obj_old['acoustic_energy'] = obj.acoustic_energy
-                            obj_old['current_energy'] = obj.current_energy
-                            obj_old['detection'] = obj.detection
-                            obj_old['mean_energy'] = obj.mean_energy
-                            obj_old['relevant_image'] = obj.relevant_image
-                            obj_old['snr'] = obj.snr
-                            obj_old['std_dev'] = obj.std_dev
-                            obj_old['leak_rate'] = obj.leak_rate
+                            obj_old = updateDict(existing_obj=obj_old, cur_obj=obj)
                         break
                 if(not hasId):
-                    self.metaData[loop]['actionpoints'].append(obj._asdict())
+                    self.metaData[loop]['actionpoints'].append(obj)
             else:
                 for obj_old in self.metaData[loop]['datapoints']: #check if datapoint in metadata
                     #print('Existing content: ', obj_old)
                     if(obj_old['id'] == wpInfo.id):
                         hasId = True
-                        for dt in obj.media:
+                        for dt in obj['media']:
                             obj_old['media'].append(dt)
                         # update signal Parameters
-                        obj_old['acoustic_energy'] = obj.acoustic_energy
-                        obj_old['current_energy'] = obj.current_energy
-                        obj_old['detection'] = obj.detection
-                        obj_old['mean_energy'] = obj.mean_energy
-                        obj_old['relevant_image'] = obj.relevant_image
-                        obj_old['snr'] = obj.snr
-                        obj_old['std_dev'] = obj.std_dev
-                        obj_old['leak_rate'] = obj.leak_rate
+                        obj_old = updateDict(existing_obj=obj_old, cur_obj=obj)
                         break
                 if(not hasId):
-                    self.metaData[loop]['datapoints'].append(obj._asdict())
+                    self.metaData[loop]['datapoints'].append(obj)
                 self.localId += 1
 
             with open(os.path.join(path, 'meta-data.yaml') , 'w') as infofile: #write meta data file
@@ -214,10 +229,10 @@ class ROSLayerUtils(object):
         except Exception as e:
             print('SC| Error creating snapshot: ', e)
     
-    def createVideoFromFrames(self, frame_list:list, filename=None, fps=10):
+    def createVideoFromFrames(self, frame_list:list, filename=None, fps=25):
         if not frame_list:
             raise ValueError("Frame list is empty. Cannot create video.")
-
+        print('Saving for file: ', filename, ' frame length: ', len(frame_list))
         # Get the shape of the frames
         layers = None
         try:
@@ -234,7 +249,7 @@ class ROSLayerUtils(object):
             save_to = os.path.join(self.getPath(fetchMsnDir=True), filename)
         
         if('THM' in filename):
-            fps = 4
+            fps = 9
         out = cv2.VideoWriter(save_to, fourcc, fps, frame_size)
         
         for frame in frame_list:

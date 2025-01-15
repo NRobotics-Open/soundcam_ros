@@ -67,7 +67,7 @@ class SoundCamConnector(object):
         self.prev_frame_t = 0
 
         #prepare utils
-        self.scamUtils = SU(window=30, detectionWin=5, acFreq=10, specFreq=4, 
+        self.scamUtils = SU(window=800, detectionWin=5, acFreq=80, specFreq=25, 
                             hi_thresh_f=self.cfgObj['hi_thresh_factor'],
                             low_thresh_f=self.cfgObj['low_thresh_factor'],
                             trigger_thresh=self.cfgObj['trigger_threshold'],
@@ -174,7 +174,6 @@ class SoundCamConnector(object):
             self.audQ = deque(maxlen=15)
             self.audQ_lock = Lock()
             self.dqueues.append(self.audQ)
-            self.aud_semaphore = Semaphore(1)
             self.threads.append(Thread(target=self.processAudio, daemon=True))
         if(self.cfgObj['processThermal']):
             self.thermalQ = deque(maxlen=15)
@@ -885,9 +884,8 @@ class SoundCamConnector(object):
                     time.sleep(0.01)
                     continue
                 decoded = self.protocol.unpackDecodeAudioData(raw)
-                with self.aud_semaphore:
-                    self.scamUtils.updateAudioBuffer(decoded) #update ringbuffer
                 with self.proc_audQ_lock:
+                    self.scamUtils.updateAudioBuffer(decoded) #update ringbuffer
                     self.proc_audQ.append(decoded)
                 if(saveAudio):
                     audioData_plus.append(decoded[2])
@@ -1231,7 +1229,7 @@ class SoundCamConnector(object):
     
     ''' Returns the Audio frame '''
     def getAudio(self):
-        with self.aud_semaphore:
+        with self.proc_audQ_lock:
             return self.scamUtils.getAudioBuffer()[-2048:]
         
     ''' Returns the Audio Info '''
@@ -1389,7 +1387,7 @@ class SoundCamConnector(object):
 
 if __name__ == '__main__':
     from config import cfgContext
-    camObj = SoundCamConnector(debug=True, cfgObj=cfgContext)
+    camObj = SoundCamConnector(debug=False, cfgObj=cfgContext)
 
     signal.signal(signal.SIGINT, camObj.signal_handler)
 
