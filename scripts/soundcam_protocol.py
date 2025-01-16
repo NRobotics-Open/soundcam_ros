@@ -5,13 +5,14 @@ from collections import namedtuple
 from bitarray import bitarray
 from bitarray.util import int2ba, ba2int
 from operator import itemgetter
-from typing import List
+from typing import List, NamedTuple
 import numpy as np
 
 Features = namedtuple('Features', 'LED Ultrasound Microcontroller Battery IR TachoTrigger')
 MDDataMessage = namedtuple('MDDataMessage', 'Command InvokeId Reserved DataLength ObjectCount')
 Status = namedtuple('Status', 'isListenerCreated isConnectedHost isBitfileLoaded isBitfileRunning isTransferActive')
 MDLeakRateData = namedtuple('MDLeakRateData', 'TimeStamp LeakRate State Reserved1 Reserved2')
+LeakInfo = NamedTuple('LeakInfo', [('leak_rate', float), ('leak_state', int)])
 class CommandCodes(Enum):
     ResetReq = 0x80
     ResetRes = 0x00
@@ -759,10 +760,11 @@ class CameraProtocol(object):
             return (None, None)
     
     ''' Unpacks, Decodes the received LeakRate bytes '''
-    def unpackDecodeLeakRateData(self, data:bytes)->MDLeakRateData:
+    def unpackDecodeLeakRateData(self, data:bytes)->LeakInfo:
         dstr = '<Qf2BH'
         try:
-            return MDLeakRateData._make(struct.unpack(dstr, data))
+            res:MDLeakRateData = MDLeakRateData._make(struct.unpack(dstr, data))
+            return LeakInfo(res.LeakRate, res.State)
         except Exception as ex:
             print(ex)
             return None

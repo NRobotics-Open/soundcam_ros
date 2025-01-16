@@ -8,6 +8,8 @@
 # float32 wpX
 # float32 wpY
 # float32 wpTheta
+# string resultDirectory
+# int imageTileNo
 diagnostic_msgs/KeyValue[] parameters 
 ---
 bool result

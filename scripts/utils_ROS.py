@@ -11,6 +11,7 @@ import numpy as np
 import soundfile as sf
 from utils import SignalInfo
 from soundcam_ros.msg import Preset
+from soundcam_protocol import LeakInfo
 
 @dataclass
 class MissionData:
@@ -30,7 +31,7 @@ class ROSLayerUtils(object):
                                          ('snr', float), ('pre_activation', bool), 
                                          ('detection', bool),
                                          ('isSolved', bool), ('relevant_image', int),
-                                         ('leak_rate', float),
+                                         ('leak_rate', float), ('leak_state', int)
                                          ('presetName', str), ('maximumFrequency', int), ('minimumFrequency', int),
                                          ('distance', float), ('crest', float), ('dynamic', float), ('maximum', float)])
     TileInfo = NamedTuple('TileInfo', [('id', int), ('relId', int)])
@@ -95,8 +96,14 @@ class ROSLayerUtils(object):
         else:
             return data
     
+    def compute_average_leak_rate(self, leak_info_list: List[LeakInfo]) -> float:
+        # Extract leak rates from the list of LeakInfo objects
+        leak_rates = [leak.leak_rate for leak in leak_info_list]
+        # Compute the average leak rate
+        return float(np.mean(leak_rates)) if leak_rates else 0.0
+    
     def addMetaData(self, wpInfo:WaypointInfo, media:list, sigInfo:SignalInfo, isActionPoint=False, 
-                    preset:Preset=None, loop=1, relevantIdx:int=0, leakRate:float=0.0, useMsnPath=False):
+                    preset:Preset=None, loop=1, relevantIdx:int=0, leakData:LeakInfo=None, useMsnPath=False):
         try:
             if(wpInfo.id == 0):
                 wpInfo._replace(id=self.localId)
@@ -104,11 +111,18 @@ class ROSLayerUtils(object):
             if(preset is not None):
                 preset_dt = (preset.presetName, preset.maxFrequency, preset.minFrequency,
                              preset.distance, preset.crest, preset.dynamic, preset.maximum)
+            if(leakData is None):
+                if((sigInfo.acoustic_energy > 0.0) and (sigInfo.detection)):
+                    #calculate estimated leakrate
+                    pass
+                else:
+                    leakData = LeakInfo(0.0, 0)
             obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(
                                                 *wpInfo, 
                                                 media,
                                                 *sigInfo,
-                                                False, int(relevantIdx), float(leakRate), 
+                                                False, int(relevantIdx), 
+                                                *leakData, 
                                                 *preset_dt)
             obj = self.convert_numpy_types(obj._asdict())
             path = self.getPath(fetchMsnDir=useMsnPath)
@@ -215,9 +229,9 @@ class ROSLayerUtils(object):
         while (self._calculateMemUsage(frame_list) > max_megabytes):
             frame_list.pop(0)  # Remove the oldest frame
     
-    def createSnapshotFromFrame(self, frame, filename=None):
+    def createSnapshotFromFrame(self, frame, filename=None)-> bool:
         if(frame is None):
-            return
+            return False
         if(filename is None):
             save_to = os.path.join(self.mediaDir, self.curImg)
         else:
@@ -228,10 +242,12 @@ class ROSLayerUtils(object):
             cv2.imwrite(save_to, frame)
         except Exception as e:
             print('SC| Error creating snapshot: ', e)
+        return True
     
-    def createVideoFromFrames(self, frame_list:list, filename=None, fps=25):
-        if not frame_list:
-            raise ValueError("Frame list is empty. Cannot create video.")
+    def createVideoFromFrames(self, frame_list:list, filename=None, fps=25)->bool:
+        if (not frame_list or (len(frame_list) < fps)):
+            #raise ValueError("Frame list is empty. Cannot create video.")
+            return False
         print('Saving for file: ', filename, ' frame length: ', len(frame_list))
         # Get the shape of the frames
         layers = None
@@ -262,6 +278,7 @@ class ROSLayerUtils(object):
         # Release everything if job is finished
         out.release()
         frame_list.clear()
+        return True
     
     '''
     Publishes the frame to the given devstream object
@@ -282,7 +299,10 @@ class ROSLayerUtils(object):
         #strmObj.write(proc_frame)
         return proc_frame
 
-    def createAudioFromFrames(self, audio_frames:list, samplerate, filename=None):
+    def createAudioFromFrames(self, audio_frames:list, samplerate, filename=None)->bool:
+        if (not audio_frames or (len(audio_frames) < 25)):
+            #raise ValueError("Frame list is empty. Cannot create video.")
+            return False
         # Concatenate the list of numpy arrays into a single numpy array
         audio_data = np.concatenate(audio_frames)
         # Save the concatenated audio data to a file
@@ -291,6 +311,7 @@ class ROSLayerUtils(object):
         else:
             save_to = os.path.join(self.getPath(fetchMsnDir=True), filename)
         sf.write(save_to, audio_data, samplerate)
+        return True
     
 
     def imageOverlay(self, bkg_img: np.array, fg_img: np.array) -> np.array:

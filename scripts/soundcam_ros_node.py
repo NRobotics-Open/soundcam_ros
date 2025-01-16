@@ -19,7 +19,7 @@ from sensor_msgs.msg import CompressedImage, CameraInfo
 from diagnostic_msgs.msg import KeyValue
 import actionlib, threading, numpy as np
 from cv_bridge import CvBridge
-from soundcam_protocol import Features, Status, MDLeakRateData
+from soundcam_protocol import Features, Status, LeakInfo
 from utils_ROS import ROSLayerUtils, MissionData
 from utils import SignalInfo, BlobInfo
 from datetime import datetime
@@ -71,9 +71,11 @@ class SoundcamROS(object):
         self.missionData = MissionData('unknown-none-nothing-nada', 0, 'unset', None)
         self.curPose = [0.0, 0.0, 90.0]
 
-        self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+        self.signalInfo_cb:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.tileInfo:ROSLayerUtils.TileInfo = ROSLayerUtils.TileInfo(0, 0)
+        self.leakInfo:LeakInfo = LeakInfo(0.0, 0.0)
+        self.leakInfo_cb:LeakInfo = LeakInfo(*self.leakInfo)
         self.signalLock = Lock()
         self.tileLock = Lock()
         self.runCmp = Event()
@@ -333,7 +335,8 @@ class SoundcamROS(object):
             rate.sleep()
     
     ''' Sends alert to other nodes about current detections '''
-    def publishDetection(self, sigInfo:SignalInfo, blobCoords:List[BlobInfo]):
+    def publishDetection(self, sigInfo:SignalInfo, blobCoords:List[BlobInfo], 
+                         leakInfo:LeakInfo):
         if(self.detection_pub.get_num_connections() > 0):
             msg = SoundcamDetection()
             msg.header.frame_id = self.cfg['frame']
@@ -352,6 +355,8 @@ class SoundcamROS(object):
                 for dt in blobCoords:
                     blob:Blob = Blob(**dt._asdict())
                     msg.blobs.append(blob)
+            msg.leakRate.data = leakInfo.leak_rate
+            msg.leakState.data = leakInfo.leak_state
             self.detection_pub.publish(msg)
             if(self.debug):
                 rospy.loginfo_throttle(3, 'SC| Published detection status')
@@ -459,12 +464,14 @@ class SoundcamROS(object):
     '''
     def _takeSnapshot(self, streamType=SoundcamServiceRequest.OVERLAY_STREAM, 
                       wpInfo:ROSLayerUtils.WaypointInfo=None, sigInfo:SignalInfo=None, 
-                      tileInfo:ROSLayerUtils.TileInfo=None):
+                      tileInfo:ROSLayerUtils.TileInfo=None, leakInfo:LeakInfo=None):
         isActPoint = True
         media = list()
         frame_data = list()
         if(tileInfo is None):
             tileInfo = ROSLayerUtils.TileInfo(0, 0)
+        if(leakInfo is None):
+            leakInfo = LeakInfo(0.0, 0)
 
         if(streamType == SoundcamServiceRequest.ALL):
             try:
@@ -490,8 +497,8 @@ class SoundcamROS(object):
                     return False
                 
                 for fobj in frame_data: #write snapshots
-                    self.utils.createSnapshotFromFrame(fobj[0], filename=fobj[1])
-                    media.append(fobj[1])
+                    if self.utils.createSnapshotFromFrame(fobj[0], filename=fobj[1]):
+                        media.append(fobj[1])
             except Exception as e:
                 rospy.logerr('SC| Error taking snapshots [ALL]: ', e)
                 return False
@@ -521,8 +528,8 @@ class SoundcamROS(object):
                         if(len(frame_data) == 0):
                             return False
                         for fobj in frame_data: #write snapshots
-                            self.utils.createSnapshotFromFrame(fobj[0], filename=fobj[1])
-                            mediaLs.append(fobj[1])
+                            if self.utils.createSnapshotFromFrame(fobj[0], filename=fobj[1]):
+                                mediaLs.append(fobj[1])
                 try:
                     _streamTypeIter(streamType, mediaLs=media, tile=tileInfo)
                 except Exception as e:
@@ -564,6 +571,7 @@ class SoundcamROS(object):
                 relevantIdx=tileInfo.relId,
                 preset=self.curPreset,
                 loop=self.curLoop,
+                leakData=leakInfo,
                 useMsnPath=True)
         self.publishCaptureFeedback(self.capture_pub)
         if(self.debug):
@@ -576,6 +584,7 @@ class SoundcamROS(object):
                        sigInfo:SignalInfo=None,
                        wpInfo:ROSLayerUtils.WaypointInfo=None,
                        tileInfo:ROSLayerUtils.TileInfo=None,
+                       leakInfoLs:List[LeakInfo]=None,
                        isActPoint=False):
         if(not auto): # manual recording save
             try:
@@ -603,67 +612,67 @@ class SoundcamROS(object):
                     media = list()
                     if(tileInfo is None):
                         tileInfo = ROSLayerUtils.TileInfo(0, 0)
+                    if(leakInfoLs is None):
+                        leakInfo = LeakInfo(0.0, 0)
+                    else:
+                        leakInfo = LeakInfo(self.utils.compute_average_leak_rate(leakInfoLs), 0)
                     # if(wpInfo is None):
                     #     wpInfo = ROSLayerUtils.WaypointInfo(0, *self.curPose)
                     
                     if(streamType == SoundcamServiceRequest.ALL):
                         sfx = ''.join(['BW_', str(tileInfo.id)])
                         filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
-                        self.utils.createVideoFromFrames(self._auto_bw_frames_ls, filename)
-                        media.append(filename)
-                        print('add BW')
+                        if(self.utils.createVideoFromFrames(self._auto_bw_frames_ls, filename)):
+                            media.append(filename)
 
                         sfx = ''.join(['THM_', str(tileInfo.id)])
                         filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
-                        self.utils.createVideoFromFrames(self._auto_tm_frames_ls, filename)
-                        media.append(filename)
-                        print('add THM')
+                        if self.utils.createVideoFromFrames(self._auto_tm_frames_ls, filename, fps=9):
+                            media.append(filename)
 
                         sfx = ''.join(['OV_', str(tileInfo.id)])
                         filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
-                        self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, filename)
-                        media.append(filename)
-                        print('add OV')
+                        if self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, filename):
+                            media.append(filename)
 
                         filename = 'AUD_' + timestamp + '.wav'
-                        self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
+                        if self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
                                                         self.camera.getAudioInfo()['sample_rate'], 
-                                                        filename)
-                        media.append(filename)
-                        print('add AUD')
+                                                        filename):
+                            media.append(filename)
 
                     elif(streamType == SoundcamServiceRequest.VIDEO_STREAM):
                         sfx = ''.join(['BW_', str(tileInfo.id)])
                         filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
-                        self.utils.createVideoFromFrames(self._auto_bw_frames_ls, filename)
-                        media.append(filename)
+                        if self.utils.createVideoFromFrames(self._auto_bw_frames_ls, filename):
+                            media.append(filename)
                         filename = 'AUD_' + timestamp + '.wav'
-                        self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
+                        if self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
                                                         self.camera.getAudioInfo()['sample_rate'], 
-                                                        filename)
-                        media.append(filename)
+                                                        filename):
+                            media.append(filename)
 
                     elif(streamType == SoundcamServiceRequest.THERMAL_STREAM):
                         sfx = ''.join(['THM_', str(tileInfo.id)])
                         filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
-                        self.utils.createVideoFromFrames(self._auto_tm_frames_ls, filename)
-                        media.append(filename)
+                        if self.utils.createVideoFromFrames(self._auto_tm_frames_ls, filename):
+                            media.append(filename)
                         filename = 'AUD_' + timestamp + '.wav'
-                        self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
+                        if self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
                                                         self.camera.getAudioInfo()['sample_rate'], 
-                                                        filename)
-                        media.append(filename)
+                                                        filename):
+                            media.append(filename)
 
                     elif(streamType == SoundcamServiceRequest.OVERLAY_STREAM):
                         sfx = ''.join(['OV_', str(tileInfo.id)])
                         filename = self.utils.getUniqueName(isImg=False, suffix=sfx)
-                        self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, filename)
-                        media.append(filename)
+                        if self.utils.createVideoFromFrames(self._auto_overlay_frames_ls, filename):
+                            media.append(filename)
                         filename = 'AUD_' + timestamp + '.wav'
-                        self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
+                        if self.utils.createAudioFromFrames(self._auto_audio_frames_ls, 
                                                         self.camera.getAudioInfo()['sample_rate'], 
-                                                        filename)
-                        media.append(filename)
+                                                        filename):
+                            media.append(filename)
                     
                     if((wpInfo is not None) and (sigInfo is not None) and (len(media) > 0)):
                         self.utils.addMetaData(
@@ -674,6 +683,7 @@ class SoundcamROS(object):
                             relevantIdx=tileInfo.relId,
                             preset=self.curPreset,
                             loop=self.curLoop,
+                            leakData=leakInfo,
                             useMsnPath=True)
                     self.publishCaptureFeedback(self.capture_pub)
                 else:
@@ -911,7 +921,9 @@ class SoundcamROS(object):
                 # Capture detection values
                 with self.signalLock:
                     siginfo = self.signalInfo._asdict()
-                    prv_siginfo = self.past_sig_i._asdict()
+                    prv_siginfo = self.signalInfo_cb._asdict()
+                    leak_info = self.leakInfo_cb._asdict()
+                    cur_leak_info = self.camera.getLeakInfo()._asdict()
 
                 if(prv_siginfo['mean_energy'] == 0.0 and 
                 prv_siginfo['std_dev'] == 0.0 and 
@@ -940,8 +952,16 @@ class SoundcamROS(object):
                         tile_i = self.tileInfo._asdict()
                         tile_i['relId'] = tile_i['id']
                         self.tileInfo = ROSLayerUtils.TileInfo(**tile_i)
+                if(cur_leak_info['leak_state'] > 0): #if current reading centered
+                    if((cur_leak_info['leak_rate'] > leak_info['leak_rate'])):
+                        leak_info['leak_rate'] = cur_leak_info['leak_rate']
+                else: #if current reading not centered
+                    if((leak_info['leak_state'] == 0) and (cur_leak_info['leak_rate'] > leak_info['leak_rate'])):
+                        leak_info['leak_rate'] = cur_leak_info['leak_rate']
                 
-                self.past_sig_i = SignalInfo(**prv_siginfo)
+                self.leakInfo_cb = LeakInfo(**leak_info)
+                self.signalInfo_cb = SignalInfo(**prv_siginfo)
+
             else:
                 time.sleep(0.1)
             
@@ -1005,6 +1025,9 @@ class SoundcamROS(object):
             wpInfo = ROSLayerUtils.WaypointInfo(wpId, wpX, wpY, wpTheta)
             with self.tileLock:
                 self.tileInfo = ROSLayerUtils.TileInfo(tile_no, tile_no)
+                self.leakInfo_cb = LeakInfo(0.0, 0)
+            if((recordTime > self.cfg['min_record_time']) and (numCaptures > 0)):
+                leakInfoLs:List[LeakInfo] = list()
 
             #run while loop
             rate = rospy.Rate(15)
@@ -1013,7 +1036,7 @@ class SoundcamROS(object):
 
             if(self.tileInfo.id <= 1):
                 with self.signalLock:
-                    self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                    self.signalInfo_cb:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
             
             #prepare directory
             self.prepareMissionDirectory()
@@ -1026,8 +1049,9 @@ class SoundcamROS(object):
                     with self.signalLock:
                         with self.tileLock:
                             res = self._takeSnapshot(streamType=streamType, 
-                                          wpInfo=wpInfo, sigInfo=SignalInfo(*self.past_sig_i),
-                                          tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo))
+                                          wpInfo=wpInfo, sigInfo=SignalInfo(*self.signalInfo_cb),
+                                          tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo),
+                                          leakInfo=LeakInfo(*self.leakInfo_cb))
                     if(res):
                         cnt += 1
                         self.act_feedbk.capture_count = cnt
@@ -1054,12 +1078,14 @@ class SoundcamROS(object):
                                                 streamType=streamType,
                                                 start_t=record_start_t, 
                                                 wpInfo=wpInfo,
-                                                sigInfo=SignalInfo(*self.past_sig_i),
-                                                tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo))
+                                                sigInfo=SignalInfo(*self.signalInfo_cb),
+                                                tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo), 
+                                                leakInfoLs=leakInfoLs.copy())
                                     cnt += 1
                             if(res):
                                 with self.signalLock:
-                                    self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                                    self.signalInfo_cb:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                                    leakInfoLs.clear()
                                 time.sleep(delay)
                             else:
                                 break
@@ -1074,7 +1100,7 @@ class SoundcamROS(object):
                             self.act_srvr.publish_feedback(self.act_feedbk)
 
                 else:
-                    rospy.logerr('SC| Snapshot nichts zu tun!')
+                    rospy.logerr('SC| Unknown request! allowed: [Image Snapshot, Video Recording]')
                     result = False
                     break
                 rate.sleep()
@@ -1166,7 +1192,8 @@ class SoundcamROS(object):
                     self._isStartup = False
             else: 
                 with self.signalLock: #always update signal Info
-                    self.signalInfo:SignalInfo = SignalInfo(*self.camera.getSignalInfo())
+                    self.signalInfo = SignalInfo(*self.camera.getSignalInfo())
+                    self.leakInfo = LeakInfo(*self.camera.getLeakInfo())
 
                 if(self.missionData.id != 0): #only perform auto-detection when explicitly required
                     if(self.autoDetect):
@@ -1183,7 +1210,7 @@ class SoundcamROS(object):
                             self.recordTrigger.set()
                             has_updated_record_start_t = False
                             prevPose = self.curPose
-                            self.past_sig_i:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                            self.signalInfo_cb:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
 
                         if(self.signalInfo.detection):
                             if(not has_updated_record_start_t):
@@ -1196,7 +1223,7 @@ class SoundcamROS(object):
                                 self.prepareMissionDirectory()
                                 self._saveRecording(auto=True, start_t=record_start_t, 
                                                     wpInfo=ROSLayerUtils.WaypointInfo(0, *prevPose), 
-                                                    sigInfo=SignalInfo(*self.past_sig_i))
+                                                    sigInfo=SignalInfo(*self.signalInfo_cb))
                                 prevPose = self.curPose
                         
                         if(not self.signalInfo.detection and self.recordTrigger.is_set()):
@@ -1204,10 +1231,11 @@ class SoundcamROS(object):
                             self.prepareMissionDirectory()
                             self._saveRecording(auto=True, start_t=record_start_t, 
                                                 wpInfo=ROSLayerUtils.WaypointInfo(0, *prevPose), 
-                                                sigInfo=SignalInfo(*self.past_sig_i))
+                                                sigInfo=SignalInfo(*self.signalInfo_cb))
                             prevPose = self.curPose                  
 
-                self.publishDetection(self.signalInfo, self.camera.getBlobData())
+                self.publishDetection(self.signalInfo, self.camera.getBlobData(), 
+                                      self.leakInfo)
 
                 if((time.time() - alive_t) >= 1.0):
                     if(not self.camera.isAlive()):

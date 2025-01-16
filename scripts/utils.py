@@ -465,6 +465,7 @@ class SoundUtils():
         levels = np.asanyarray(levels)
         return 10.0 * np.log10((10.0**(levels / 10.0)).mean(axis=axis))
 
+
 '''
 -----------------------------------------EUCLIDEAN DISTANCE TRACKER
 '''

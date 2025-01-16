@@ -11,3 +11,5 @@ std_msgs/Float32 snr
 std_msgs/Float32 acousticEnergy
 std_msgs/Bool preActivation
 std_msgs/Bool detection
+std_msgs/Float32 leakRate
+std_msgs/Int32 leakState

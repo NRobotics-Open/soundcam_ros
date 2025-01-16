@@ -19,7 +19,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from soundcam_protocol import CommandCodes, DataMessages, MDDataMessage, Device, \
-    DataObjects, CameraProtocol, MDLeakRateData, Status
+    DataObjects, CameraProtocol, LeakInfo, Status
 from threading import Thread, Semaphore, Event, Lock
 from queue import Empty, Queue
 from collections import deque
@@ -108,7 +108,7 @@ class SoundCamConnector(object):
         self.blob_data = list()
         self.blobLock = Lock()
         self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
-        self.leakRate:MDLeakRateData = MDLeakRateData(0, 0, 0, 0, 0)
+        self.leakRate:LeakInfo = LeakInfo(0.0, 0)
 
         #prepare queues
         self.threads = list()
@@ -708,7 +708,6 @@ class SoundCamConnector(object):
                                 #TODO: call function to decode
                                 pass
                             elif(objhdr[0] == DataObjects.Ids.LeakRate.value):
-                                print('Got Leakage data', datablock)
                                 self._addDequeue(self.leakRateQ, datablock, self.leakRateQ_lock)
                             else: #raw probably data
                                 # print(res, ' | ',cmd_obj)
@@ -840,10 +839,9 @@ class SoundCamConnector(object):
                 decoded = self.protocol.unpackDecodeSpectrumData(raw)
                 if(decoded is None):
                     continue
-                with self.spec_semaphore:
+                with self.proc_specQ_lock:
                     self.scamUtils.updateSpectrumBuffer(decoded)
                     self.signalInfo = self.scamUtils.getSignalAnalysis()
-                with self.proc_specQ_lock:
                     self.proc_specQ.append(decoded)         
                 if(saveSpectrum):
                     specData.append(decoded[2])
@@ -961,8 +959,9 @@ class SoundCamConnector(object):
                 except IndexError:
                     time.sleep(0.01)
                     continue
-                self.leakRate = MDLeakRateData(**self.protocol.unpackDecodeLeakRateData(raw)._asdict())
-                print(f"\tLeakRate: {self.leakRate.LeakRate} \t\tStatus: {self.leakRate.State}")
+                with self.leakRateQ_lock:
+                    self.leakRate = self.protocol.unpackDecodeLeakRateData(raw)
+                    print(f"\t {self.leakRate}")
                 hits += 1
                 if((time.time() - start_t >= 1.0) and self.debug):
                     print('===============================================================LeakRate @ %i Hz' % hits)
@@ -1269,6 +1268,10 @@ class SoundCamConnector(object):
     '''
     def getSignalInfo(self):
         return self.signalInfo
+    
+    def getLeakInfo(self)->LeakInfo:
+        with self.leakRateQ_lock:
+            return self.leakRate
     
     ''' Sets & Returns the scaling Mode for the Acoustic filter '''
     def setScalingMode(self, mode, max=None, dynamic=5.0, crest=3.1):
