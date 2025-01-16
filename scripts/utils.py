@@ -344,10 +344,11 @@ class SoundUtils():
         #high_threshold, low_threshold = self.dynamicThreshold(mean_energy, std_energy, snr)
         high_threshold, low_threshold = self.dynamicThreshold2(mean_energy, std_energy, snr, use_snr=True)
         # if(ac_energy != 0.0):
-        #     print(f"hi-thresh = {high_threshold}")
+        #     #print(f"hi-thresh = {high_threshold}")
         #     print(f"acoustic-energy = {ac_energy}")
         #     print(f"current-energy = {current_energy}")
-        #     print(f"low-thresh = {low_threshold}\n")
+        #     #print(f"low-thresh = {low_threshold}\n")
+        #     print(f"Estimated LeakRate: ", self.estimateLeakRate(ac_energy=ac_energy, constant=0.25))
         #if(self.debug):
         
         
@@ -464,7 +465,16 @@ class SoundUtils():
         """
         levels = np.asanyarray(levels)
         return 10.0 * np.log10((10.0**(levels / 10.0)).mean(axis=axis))
-
+    
+    def estimateLeakRate(self, siginfo:SignalInfo, constant=1.25, distance=3.5):
+        if siginfo.current_energy > 0 and distance > 0:
+            print("cur-energy", siginfo.current_energy)
+            print(f"acoustic: {siginfo.acoustic_energy}")
+            if(siginfo.current_energy > 24.5):
+                constant += 0.05
+            return constant * (siginfo.current_energy * distance**2)**0.5
+        else:
+            return 0.0
 
 '''
 -----------------------------------------EUCLIDEAN DISTANCE TRACKER

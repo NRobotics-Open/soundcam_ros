@@ -17,7 +17,7 @@ if __name__ == '__main__':
         goal.parameters.append(KeyValue(key='uuid', value=str(uuid.uuid4())))
         goal.parameters.append(KeyValue(key='delay', value=str(1)))
         goal.parameters.append(KeyValue(key='numCaptures', value=str(1)))
-        goal.parameters.append(KeyValue(key='recordTime', value=str(15))) #seconds
+        goal.parameters.append(KeyValue(key='recordTime', value=str(10))) #seconds
         goal.parameters.append(KeyValue(key='mediaType', value=''))
         goal.parameters.append(KeyValue(key='missionId', value=str(16)))
         goal.parameters.append(KeyValue(key='missionName', value='test-snapshot'))

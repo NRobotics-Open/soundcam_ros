@@ -31,7 +31,7 @@ class ROSLayerUtils(object):
                                          ('snr', float), ('pre_activation', bool), 
                                          ('detection', bool),
                                          ('isSolved', bool), ('relevant_image', int),
-                                         ('leak_rate', float), ('leak_state', int)
+                                         ('leak_rate', float), ('leak_state', int),
                                          ('presetName', str), ('maximumFrequency', int), ('minimumFrequency', int),
                                          ('distance', float), ('crest', float), ('dynamic', float), ('maximum', float)])
     TileInfo = NamedTuple('TileInfo', [('id', int), ('relId', int)])
@@ -99,6 +99,7 @@ class ROSLayerUtils(object):
     def compute_average_leak_rate(self, leak_info_list: List[LeakInfo]) -> float:
         # Extract leak rates from the list of LeakInfo objects
         leak_rates = [leak.leak_rate for leak in leak_info_list]
+        # print('leak rates: ', leak_rates)
         # Compute the average leak rate
         return float(np.mean(leak_rates)) if leak_rates else 0.0
     
@@ -114,7 +115,7 @@ class ROSLayerUtils(object):
             if(leakData is None):
                 if((sigInfo.acoustic_energy > 0.0) and (sigInfo.detection)):
                     #calculate estimated leakrate
-                    pass
+                    print('Estimating leak rate')
                 else:
                     leakData = LeakInfo(0.0, 0)
             obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(
@@ -315,6 +316,8 @@ class ROSLayerUtils(object):
     
 
     def imageOverlay(self, bkg_img: np.array, fg_img: np.array) -> np.array:
+        if(bkg_img is None or fg_img is None):
+            return None
         # Ensure both images are in BGRA format
         if len(bkg_img.shape) == 2:
             bkg_img = cv2.cvtColor(bkg_img, cv2.COLOR_GRAY2BGRA)

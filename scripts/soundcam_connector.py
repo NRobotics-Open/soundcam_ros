@@ -141,6 +141,7 @@ class SoundCamConnector(object):
         self.proc_thmQ = deque(maxlen=30)
         self.proc_thmQ_lock = Lock()
         self.dqueues.append(self.proc_thmQ)
+        self.proc_leak_lock = Lock()
             
         if(not self.cfgObj['system_run']): #prevent any form of visualization if not system_run
             #self.cfgObj['visualizeOverlay'] = False
@@ -748,6 +749,8 @@ class SoundCamConnector(object):
             else:
                 #print('Awaiting socket connnection ...')
                 time.sleep(0.1)
+        print('\nRECEIVE CYCLIC - loop ENDED! ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+        time.sleep(5.0)
         exit(-9)
 
     '''Decodes and Publishes Video data'''
@@ -959,9 +962,12 @@ class SoundCamConnector(object):
                 except IndexError:
                     time.sleep(0.01)
                     continue
-                with self.leakRateQ_lock:
+                with self.proc_leak_lock:
                     self.leakRate = self.protocol.unpackDecodeLeakRateData(raw)
-                    print(f"\t {self.leakRate}")
+                    print(f"Calculated: \t {self.leakRate}")
+                    res = self.scamUtils.estimateLeakRate(siginfo=SignalInfo(*self.signalInfo), constant=0.2)
+                    print(f"Estimated: \t {res}")
+                    
                 hits += 1
                 if((time.time() - start_t >= 1.0) and self.debug):
                     print('===============================================================LeakRate @ %i Hz' % hits)
@@ -1250,7 +1256,7 @@ class SoundCamConnector(object):
     
     ''' Returns the Spectrum frame '''
     def getSpectrum(self):
-        with self.spec_semaphore:
+        with self.specQ_lock:
             return (self.scamUtils.p_getFrequencies(), self.scamUtils.getSpectrumBuffer()[-1023:])
     
     ''' Returns the current blob data '''
@@ -1259,6 +1265,8 @@ class SoundCamConnector(object):
             return self.blob_data
         
     def drawRect(self, frame: np.array):
+        if frame is None:
+            return None
         with self.blobLock:
             return self.objTracker.drawDetections(blob_data=self.blob_data, frame=frame.copy(), getResult=True)
     
@@ -1270,7 +1278,10 @@ class SoundCamConnector(object):
         return self.signalInfo
     
     def getLeakInfo(self)->LeakInfo:
-        with self.leakRateQ_lock:
+        with self.proc_leak_lock:
+            if(self.cfgObj['estimate_leak']):
+                self.leakRate = LeakInfo(self.scamUtils.estimateLeakRate(ac_energy=self.signalInfo.current_energy, 
+                                                                         constant=0.2), 2)
             return self.leakRate
     
     ''' Sets & Returns the scaling Mode for the Acoustic filter '''

@@ -613,8 +613,10 @@ class SoundcamROS(object):
                     if(tileInfo is None):
                         tileInfo = ROSLayerUtils.TileInfo(0, 0)
                     if(leakInfoLs is None):
+                        print('Does not have LeakInfo list: ')
                         leakInfo = LeakInfo(0.0, 0)
                     else:
+                        print('Has LeakInfo list: ', len(leakInfoLs))
                         leakInfo = LeakInfo(self.utils.compute_average_leak_rate(leakInfoLs), 0)
                     # if(wpInfo is None):
                     #     wpInfo = ROSLayerUtils.WaypointInfo(0, *self.curPose)
@@ -1094,6 +1096,8 @@ class SoundcamROS(object):
                             result = True
                             break
                         else:
+                            with self.signalLock:
+                                leakInfoLs.append(self.leakInfo)
                             rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
                             self.act_feedbk.capture_count = cnt
                             self.act_feedbk.currentTime.data = rospy.Time.now()
