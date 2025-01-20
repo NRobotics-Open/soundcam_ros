@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import wave, time, math, pickle
 import SharedArray as sa
 from enum import Enum
-import cv2
+import cv2, csv, datetime
 from typing import NamedTuple
 
 NFFT = 4096
@@ -475,7 +475,25 @@ class SoundUtils():
             return constant * (siginfo.current_energy * distance**2)**0.5
         else:
             return 0.0
+    
+    def append_to_csv_with_timestamp(file_path: str, value1: float, value2: float, value3: float) -> None:
+        """
+        Appends three float values with a timestamp to a CSV file.
 
+        Args:
+            file_path (str): Path to the CSV file.
+            value1 (float): First value to write.
+            value2 (float): Second value to write.
+            value3 (float): Third value to write.
+        """
+        timestamp = datetime.datetime.now().isoformat()
+        try:
+            with open(file_path, mode='a', newline='') as file:
+                writer = csv.writer(file)
+                writer.writerow([timestamp, value1, value2, value3])
+            print(f"Data appended to {file_path}: {timestamp}, {value1}, {value2}, {value3}")
+        except Exception as e:
+            print(f"Error writing to {file_path}: {e}")
 '''
 -----------------------------------------EUCLIDEAN DISTANCE TRACKER
 '''
