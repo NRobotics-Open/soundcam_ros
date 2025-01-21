@@ -117,9 +117,10 @@ class SoundcamROS(object):
                 thread_grp.append(threading.Thread(target=self.videoPublishing, 
                                         args=[self.vidbw_pub, SoundcamServiceRequest.VIDEO_STREAM], 
                                         daemon=True))
-                thread_grp.append(threading.Thread(target=self.devStreamPublishing, 
-                                        args=[SoundcamServiceRequest.VIDEO_STREAM, self.devStr[0]], 
-                                        daemon=True))
+                if(self.pubDevStream):
+                    thread_grp.append(threading.Thread(target=self.devStreamPublishing, 
+                                            args=[SoundcamServiceRequest.VIDEO_STREAM, self.devStr[0]], 
+                                            daemon=True))
             if(self.cfg['processThermal']):
                 self.vidthm_pub = rospy.Publisher(self.cfg['frame'] + '/video/thermal/compressed', CompressedImage, queue_size=15)
                 thread_grp.append(threading.Thread(target=self.videoPublishing, 

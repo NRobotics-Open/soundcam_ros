@@ -75,7 +75,9 @@ frame_multiplier: 1.0 #for video recording timing
 rest_dist: 3.0 #meters How far the robot can travel before recording the next trigger in Autodetect mode
 pose_topic: '/robot_pose'
 capture_feedback_topic: '/wp/capture/status'
-publish_dev: True
+publish_dev: False
 bw_virt_device: '/dev/video0'
 estimate_leak: False
+get_world_coordinate: True
+center_blob: False
 

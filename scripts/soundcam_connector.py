@@ -1406,7 +1406,6 @@ class SoundCamConnector(object):
 if __name__ == '__main__':
     from config import cfgContext
     camObj = SoundCamConnector(debug=False, cfgObj=cfgContext)
-
     signal.signal(signal.SIGINT, camObj.signal_handler)
 
     if(camObj.reconnect()):
@@ -1416,7 +1415,7 @@ if __name__ == '__main__':
             pass
         print(camObj.getStatus(), '\n')
 
-    camObj.startMeasurement()
+        camObj.startMeasurement()
     try:
         while(camObj.processData):
             time.sleep(0.001)
