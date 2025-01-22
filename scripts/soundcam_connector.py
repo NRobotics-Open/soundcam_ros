@@ -671,19 +671,23 @@ class SoundCamConnector(object):
                 try:
                     if(self.recvStream):
                         self.hasStreamData = True
-                        res = self.sock.recv(2)
+                        #res = self.sock.recv(2)
+                        res = self.recv_all(2)
                         cmd_obj = struct.unpack(dstr_cmd_invkid, res) #decode command & invoke id
                         if(cmd_obj[0] == DataMessages.CommandCodes.DataMessage.value):
                             #print('Stub 1')
-                            res_ext = self.sock.recv(10)
+                            #res_ext = self.sock.recv(10)
+                            res_ext = self.recv_all(10)
                             _, datalen, objcnt = struct.unpack(dstr_hdr, res_ext)
                             res += res_ext
                             #raw_buffer += res
                             #print('DataMessage | InvokeId', cmd_obj, ' | Len: ',datalen, ' Cnt: ', objcnt, '\n', res.hex())
                             if(objcnt > 1):
                                 print('DataMessage contains multiple objects')
+                                print('DataMessage | InvokeId', cmd_obj, ' | Len: ',datalen, ' Cnt: ', objcnt, '\n', res.hex())
                                 exit(-9)
-                            hdr = self.sock.recv(8)
+                            #hdr = self.sock.recv(8)
+                            hdr = self.recv_all(8)
                             #raw_buffer += hdr
                             objhdr = self.protocol.unpackDataObjectHeader(hdr)
                             #print('Got object with Header ->',hdr.hex(),  '| (Type: %i, Version: %i, Length: %i) ' % objhdr)
@@ -728,13 +732,13 @@ class SoundCamConnector(object):
                                 (cmd_obj[0] == CommandCodes.WriteDataObjectRes.value) or 
                                 (cmd_obj[0] == CommandCodes.StopProcedureRes.value) or 
                                 (cmd_obj[0] == CommandCodes.ResetRes.value)):
-                            res = self.sock.recv(10)
+                            res = self.recv_all(10)
                             hdr_obj = struct.unpack(dstr_hdr, res)
                             #print(res, ' | ',hdr_obj)
                         
                     else: #if not streaming
                         try: #TODO: revisit this in the future
-                            res = self.sock.recv(self.bufSize)
+                            res = self.recv_all(self.bufSize)
                             self.protocol.unpackDecodeResponse(response=res)
                         except Exception as ex:
                             print('\nError Unpacking and Decoding ...')
