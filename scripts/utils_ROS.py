@@ -6,7 +6,7 @@ from datetime import datetime
 from dataclasses import dataclass
 import yaml
 import cv2, os, math
-from typing import NamedTuple, List
+from typing import NamedTuple, List, Dict
 import numpy as np
 import soundfile as sf
 from utils import SignalInfo
@@ -22,6 +22,7 @@ class MissionData:
 
 class ROSLayerUtils(object):
     PoseInfo = NamedTuple('PoseInfo', [('x', float), ('y', float), ('theta', float)])
+    Pose3dInfo = NamedTuple('Pose3dInfo', [('x', float), ('y', float), ('z', float)])
     WaypointInfo = NamedTuple('WaypointInfo', [('id', int), ('x', float), ('y', float), ('theta', float)])
     DataPoint = NamedTuple('DataPoint', [('id', int), ('x', float), ('y', float), ('theta', float), 
                                          ('media', List),  
@@ -32,6 +33,7 @@ class ROSLayerUtils(object):
                                          ('detection', bool),
                                          ('isSolved', bool), ('relevant_image', int),
                                          ('leak_rate', float), ('leak_state', int),
+                                         ('world_point', Dict),
                                          ('presetName', str), ('maximumFrequency', int), ('minimumFrequency', int),
                                          ('distance', float), ('crest', float), ('dynamic', float), ('maximum', float)])
     TileInfo = NamedTuple('TileInfo', [('id', int), ('relId', int)])
@@ -103,8 +105,10 @@ class ROSLayerUtils(object):
         # Compute the average leak rate
         return float(np.mean(leak_rates)) if leak_rates else 0.0
     
-    def addMetaData(self, wpInfo:WaypointInfo, media:list, sigInfo:SignalInfo, isActionPoint=False, 
-                    preset:Preset=None, loop=1, relevantIdx:int=0, leakData:LeakInfo=None, useMsnPath=False):
+    def addMetaData(self, wpInfo:WaypointInfo, media:list, sigInfo:SignalInfo, pose3dInfo:Pose3dInfo=None, 
+                    isActionPoint=False, 
+                    preset:Preset=None, loop=1, relevantIdx:int=0, leakData:LeakInfo=None,
+                    useMsnPath=False):
         try:
             if(wpInfo.id == 0):
                 wpInfo._replace(id=self.localId)
@@ -118,12 +122,16 @@ class ROSLayerUtils(object):
                     print('Estimating leak rate')
                 else:
                     leakData = LeakInfo(0.0, 0)
+            if(pose3dInfo is None):
+                pose3dInfo = ROSLayerUtils.Pose3dInfo(0.0, 0.0, 0.0)
+            
             obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(
                                                 *wpInfo, 
                                                 media,
                                                 *sigInfo,
                                                 False, int(relevantIdx), 
                                                 *leakData, 
+                                                world_point=pose3dInfo._asdict(),
                                                 *preset_dt)
             obj = self.convert_numpy_types(obj._asdict())
             path = self.getPath(fetchMsnDir=useMsnPath)

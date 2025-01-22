@@ -78,6 +78,10 @@ capture_feedback_topic: '/wp/capture/status'
 publish_dev: False
 bw_virt_device: '/dev/video0'
 estimate_leak: False
+
 get_world_coordinate: True
+world_coord_service_name: '/Image2WorldPointService'
+world_coord_pcl_topic: '/cloud0'
+
 center_blob: False
 
