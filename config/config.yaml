@@ -81,7 +81,7 @@ estimate_leak: False
 
 get_world_coordinate: True
 world_coord_service_name: '/Image2WorldPointService'
-world_coord_pcl_topic: '/cloud0'
+world_coord_pcl_topic: '/livox/lidar'
 
 center_blob: False
 
