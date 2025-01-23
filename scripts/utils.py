@@ -476,7 +476,7 @@ class SoundUtils():
         else:
             return 0.0
     
-    def append_to_csv_with_timestamp(file_path: str, value1: float, value2: float, value3: float) -> None:
+    def append_to_csv_with_timestamp(self, file_path: str, value1: float, value2: float, value3: float) -> None:
         """
         Appends three float values with a timestamp to a CSV file.
 
