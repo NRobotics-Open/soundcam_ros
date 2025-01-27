@@ -5,6 +5,7 @@ import SharedArray as sa
 from enum import Enum
 import cv2, csv, datetime
 from typing import NamedTuple
+from soundcam_protocol import LeakInfo
 
 NFFT = 4096
 NOVERLAP = 128
@@ -466,15 +467,60 @@ class SoundUtils():
         levels = np.asanyarray(levels)
         return 10.0 * np.log10((10.0**(levels / 10.0)).mean(axis=axis))
     
-    def estimateLeakRate(self, siginfo:SignalInfo, constant=1.25, distance=3.5):
+    def estimateLeakRate(self, siginfo:SignalInfo, use_lin=False, use_approx=False)->LeakInfo:
+        leak_rate = 0.0
+        if(use_approx):
+            leak_rate = self.approx_leakRate(siginfo=siginfo)
+        
+        if(use_lin):
+            leak_rate = self.linRegression_leakRate(siginfo.acoustic_energy, 
+                                               siginfo.current_energy)
+        else:
+            leak_rate = self.polyRegression_leakRate(siginfo.acoustic_energy, 
+                                                siginfo.current_energy)
+        return LeakInfo(leak_rate, 2)
+    
+    def approx_leakRate(self, siginfo:SignalInfo, constant=1.25, distance=3.5):
         if siginfo.current_energy > 0 and distance > 0:
-            print("cur-energy", siginfo.current_energy)
-            print(f"acoustic: {siginfo.acoustic_energy}")
+            # print("cur-energy", siginfo.current_energy)
+            # print(f"acoustic: {siginfo.acoustic_energy}")
             if(siginfo.current_energy > 24.5):
                 constant += 0.05
             return constant * (siginfo.current_energy * distance**2)**0.5
         else:
             return 0.0
+    
+    def linRegression_leakRate(self, acoustic_energy:float, current_energy:float, a_coeff=-1.2286, i_coeff=1.2077, intercept=-6.6706)->float:
+        """
+        Returns the approximated leak rate predicted by a linear regression model.
+
+        Args:
+            a_coeff (float): Coefficient for acoustic energy.
+            i_coeff (float): Coefficient for current energy.
+            intercept (float): Intercept of the regression line.
+            acoustic_energy (float): Acoustic energy value.
+            current_energy (float): Current energy value.
+        """
+        return a_coeff * acoustic_energy + i_coeff * current_energy + intercept
+
+    def polyRegression_leakRate(self, acoustic_energy:float, current_energy:float, 
+                                coeff_list=[-6.6706, 0.9788, -1.2160, 0.0059, -0.0312, 0.0350])->float:
+        """
+        Returns the approximated leak rate predicted by a 2nd degree polynomial regression model.
+
+        Args:
+            coeff (list[float]): Intercept and coefficients of the polynomial regression model in the order:
+            ['1', 'A', 'I', 'A^2', 'A I', 'I^2'], where 'A' is the acoustic energy and 'I' is the current energy.
+            acoustic_energy (float): Acoustic energy value.
+            current_energy (float): Current energy value.
+        """    
+        approx_leakRate = (coeff_list[1] * acoustic_energy +  # acoustic_energy term
+                        coeff_list[2] * current_energy +  # current_energy term
+                        coeff_list[3] * acoustic_energy**2 +  # acoustic_energy^2 term
+                        coeff_list[4] * acoustic_energy * current_energy +  # interaction term
+                        coeff_list[5] * current_energy**2 +  # current_energy^2 term
+                        coeff_list[0])
+        return approx_leakRate
     
     def append_to_csv_with_timestamp(self, file_path: str, value1: float, value2: float, value3: float) -> None:
         """

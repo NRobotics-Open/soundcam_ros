@@ -849,6 +849,9 @@ class SoundCamConnector(object):
                 with self.proc_specQ_lock:
                     self.scamUtils.updateSpectrumBuffer(decoded)
                     self.signalInfo = self.scamUtils.getSignalAnalysis()
+                    if(self.cfgObj['estimate_leak']):
+                        with self.proc_leak_lock:
+                            self.leakRate = self.scamUtils.estimateLeakRate(siginfo=SignalInfo(*self.signalInfo))
                     self.proc_specQ.append(decoded)         
                 if(saveSpectrum):
                     specData.append(decoded[2])
@@ -966,15 +969,16 @@ class SoundCamConnector(object):
                 except IndexError:
                     time.sleep(0.01)
                     continue
-                with self.proc_leak_lock:
-                    self.leakRate = self.protocol.unpackDecodeLeakRateData(raw)
-                    #print(f"Calculated: \t {self.leakRate}")
-                    #res = self.scamUtils.estimateLeakRate(siginfo=SignalInfo(*self.signalInfo), constant=0.2)
-                    #print(f"Estimated: \t {res}")
-                    self.scamUtils.append_to_csv_with_timestamp('data_collection.csv', 
-                                                                self.signalInfo.acoustic_energy, 
-                                                                self.signalInfo.current_energy, 
-                                                                self.leakRate.leak_rate)
+                if(not self.cfgObj['estimate_leak']):
+                    with self.proc_leak_lock:
+                        self.leakRate = self.protocol.unpackDecodeLeakRateData(raw)
+                        #print(f"Calculated: \t {self.leakRate}")
+                        #res = self.scamUtils.estimateLeakRate(siginfo=SignalInfo(*self.signalInfo), constant=0.2)
+                        #print(f"Estimated: \t {res}")
+                        # self.scamUtils.append_to_csv_with_timestamp('data_collection.csv', 
+                        #                                             self.signalInfo.acoustic_energy, 
+                        #                                             self.signalInfo.current_energy, 
+                        #                                             self.leakRate.leak_rate)
                     
                 hits += 1
                 if((time.time() - start_t >= 1.0) and self.debug):

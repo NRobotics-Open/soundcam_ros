@@ -1080,7 +1080,7 @@ class SoundcamROS(object):
             while(not rospy.is_shutdown()):
                 if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)): #Take Snapshots
                     blobs:List[BlobInfo] = self.camera.getBlobData()
-                    if(self.cfg['']):
+                    if(self.cfg['center_blob']):
                         (res, idx) = self.centerBlob(blobs)
                     if(self.cfg['get_world_coordinate']):
                         if(len(blobs) > 0):
@@ -1135,7 +1135,7 @@ class SoundcamROS(object):
                             break
                         else:
                             with self.signalLock:
-                                leakInfoLs.append(self.leakInfo)
+                                leakInfoLs.append(LeakInfo(*self.leakInfo))
                             rospy.loginfo_throttle(3, 'SC| Recording [%i] in progress ...' % cnt)
                             self.act_feedbk.capture_count = cnt
                             self.act_feedbk.currentTime.data = rospy.Time.now()

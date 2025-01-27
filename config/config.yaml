@@ -79,7 +79,7 @@ publish_dev: False
 bw_virt_device: '/dev/video0'
 estimate_leak: False
 
-get_world_coordinate: True
+get_world_coordinate: False
 world_coord_service_name: '/Image2WorldPointService'
 world_coord_pcl_topic: '/livox/lidar'
 
