@@ -478,6 +478,7 @@ class SoundUtils():
         else:
             leak_rate = self.polyRegression_leakRate(siginfo.acoustic_energy, 
                                                 siginfo.current_energy)
+        leak_rate = -1 * leak_rate if (leak_rate < 0) else leak_rate
         return LeakInfo(leak_rate, 2)
     
     def approx_leakRate(self, siginfo:SignalInfo, constant=1.25, distance=3.5):
@@ -655,7 +656,7 @@ class EuclideanDistTracker:
                 x, y, width, height = int(blob.x), int(blob.y), int(blob.width), int(blob.height)
 
                 # Draw blob ID
-                cv2.putText(frame, str(blob.id), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                #cv2.putText(frame, str(blob.id), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
                 # Draw rectangle
                 cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 255, 0), 1)

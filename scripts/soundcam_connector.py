@@ -587,6 +587,7 @@ class SoundCamConnector(object):
             query = self.protocol.startStopProcedure(self.invokeId) #start procedure
             self.invokeId += 1
             self.sendData(query=query)
+            #self.emptyBuffer()
             self.recvStream = True
             print('Starting measurement ...')
             start_t = time.time()
@@ -636,9 +637,9 @@ class SoundCamConnector(object):
             if len(inputready)==0: break
             for s in inputready: s.recv(1)
 
-    def recv_all(self, num_bytes):
+    def recv_all(self, num_bytes, ap_data=b''):
         """Receive exactly num_bytes from the socket."""
-        data = b''
+        data = ap_data
         while len(data) < num_bytes:
             packet = self.sock.recv(num_bytes - len(data))  # Receive the remaining amount of data
             if not packet:
@@ -646,6 +647,17 @@ class SoundCamConnector(object):
                 raise ConnectionError("Socket connection closed before receiving all data")
             data += packet
         return data
+    
+    ''' REGEX pattern matcher '''
+    def getMatch(self, buf):
+        match = None
+        for ptn in self.protocol.p_getPatterns():
+            res = ptn.search(buf)
+            if(match is None):
+                match = res
+            elif(res and (res.span()[0] < match.span()[0])):
+                match = res
+        return match
 
 
     def receiveCyclic(self):
@@ -675,6 +687,8 @@ class SoundCamConnector(object):
                         res = self.recv_all(2)
                         cmd_obj = struct.unpack(dstr_cmd_invkid, res) #decode command & invoke id
                         if(cmd_obj[0] == DataMessages.CommandCodes.DataMessage.value):
+                            match = None #reset match var
+                            rdata = b''
                             #print('Stub 1')
                             #res_ext = self.sock.recv(10)
                             res_ext = self.recv_all(10)
@@ -683,16 +697,30 @@ class SoundCamConnector(object):
                             #raw_buffer += res
                             #print('DataMessage | InvokeId', cmd_obj, ' | Len: ',datalen, ' Cnt: ', objcnt, '\n', res.hex())
                             if(objcnt > 1):
-                                print('DataMessage contains multiple objects')
+                                print('DataMessage contains multiple objects', res_ext)
                                 print('DataMessage | InvokeId', cmd_obj, ' | Len: ',datalen, ' Cnt: ', objcnt, '\n', res.hex())
-                                exit(-9)
-                            #hdr = self.sock.recv(8)
-                            hdr = self.recv_all(8)
+                                while(True):
+                                    rdata = self.recv_all(50)
+                                    match = self.getMatch(rdata)
+                                    if(match):
+                                        #idx = match.span()[0] - 12
+                                        hdr = rdata[match.span()[0]: match.span()[1]]
+                                        rdata = rdata[match.span()[1]:]
+                                        #print(match, ' Hdr at: ', idx)
+                                        break
+                                if(match is None):
+                                    print('\nPattern not found exiting ...')
+                                    continue
+                            else:
+                                #hdr = self.sock.recv(8)
+                                hdr = self.recv_all(8)
+
                             #raw_buffer += hdr
                             objhdr = self.protocol.unpackDataObjectHeader(hdr)
                             #print('Got object with Header ->',hdr.hex(),  '| (Type: %i, Version: %i, Length: %i) ' % objhdr)
+                            
                             #Reading Data object
-                            datablock = self.recv_all(objhdr[2])
+                            datablock = self.recv_all(objhdr[2], ap_data=rdata)
                             dblocklen = len(datablock)
                             if(dblocklen != objhdr[2]):
                                 print('Data read length mismatch: missing bytes = ', (objhdr[2] - dblocklen))
@@ -1413,7 +1441,7 @@ class SoundCamConnector(object):
 
 if __name__ == '__main__':
     from config import cfgContext
-    camObj = SoundCamConnector(debug=False, cfgObj=cfgContext)
+    camObj = SoundCamConnector(debug=True, cfgObj=cfgContext)
     signal.signal(signal.SIGINT, camObj.signal_handler)
 
     if(camObj.reconnect()):

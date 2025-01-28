@@ -7,6 +7,7 @@ from bitarray.util import int2ba, ba2int
 from operator import itemgetter
 from typing import List, NamedTuple
 import numpy as np
+import re
 
 Features = namedtuple('Features', 'LED Ultrasound Microcontroller Battery IR TachoTrigger')
 MDDataMessage = namedtuple('MDDataMessage', 'Command InvokeId Reserved DataLength ObjectCount')
@@ -359,6 +360,15 @@ class CameraProtocol(object):
         self.stateProcStatus = bitarray(DataMessages.Status.MAX_SIZE.value)
         self.stateProcStatus.setall(0)
 
+        #patterns
+        self.patterns = list()
+        #patterns.append(re.compile(b'A.*?\x00\x00,0\x00\x00.*?\x00\x00\x00', re.DOTALL)) #datamessage
+        self.patterns.append(re.compile(b'\r\x00\x00\x06\x0c,\x01\x00', re.DOTALL)) #video (low-res)
+        self.patterns.append(re.compile(b'\r\x00\x00\x06\x0c\xb0\x04\x00', re.DOTALL)) #video (hi-res)
+        self.patterns.append(re.compile(b'\x0e\x00\x02\x00 0\x00\x00', re.DOTALL)) #acoustic
+        self.patterns.append(re.compile(b'\x0f\x00\x03\x00& \x00\x00', re.DOTALL)) #spectrum
+        self.patterns.append(re.compile(b'\x10\x00\x03\x00\x1e@\x00\x00', re.DOTALL)) #audio
+
     
     def __post_init__(self):
         print('Running post init')
@@ -380,6 +390,8 @@ class CameraProtocol(object):
         return self.isConfigured
     def p_hasInitialStatus(self):
         return self.hasInitialStatus
+    def p_getPatterns(self):
+        return self.patterns
 
     '''
             OTHER METHODS

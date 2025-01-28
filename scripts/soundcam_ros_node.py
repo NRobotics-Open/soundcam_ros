@@ -26,7 +26,7 @@ from datetime import datetime
 import cv2
 import pyfakewebcam as pf
 from threading import Event, Thread, Lock
-from typing import List
+from typing import List, Tuple
 from nr_imagepoint2worldpoint.srv import GetWorldPointFromImagePoint, GetWorldPointFromImagePointRequest, GetWorldPointFromImagePointResponse
 
 class SoundcamROS(object):
@@ -405,7 +405,7 @@ class SoundcamROS(object):
             return ROSLayerUtils.Pose3dInfo(0.0, 0.0, 0.0)
     
     ''' Triggers blob centering '''
-    def centerBlob(self, blobs:List[BlobInfo])-> tuple[bool, int]:
+    def centerBlob(self, blobs:List[BlobInfo])-> Tuple[bool, int]:
         return (False, 0)
 
     '''
