@@ -139,7 +139,7 @@ class ROSLayerUtils(object):
             if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
                 with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
                     self.metaData = yaml.safe_load(infofile)
-                    print('MetaData: ', self.metaData)
+                    #print('MetaData: ', self.metaData)
                     #check by the current loop
                     if((self.metaData is not None) and (loop not in self.metaData.keys())):
                         self.metaData[loop] = {'datapoints':[], 'actionpoints':[]}
