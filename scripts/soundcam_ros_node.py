@@ -602,6 +602,8 @@ class SoundcamROS(object):
                 loop=self.curLoop,
                 leakData=leakInfo,
                 useMsnPath=True)
+        else:
+            rospy.logwarn('Image captured will not be logged!', wpInfo, ' ', len(media))
         self.publishCaptureFeedback(self.capture_pub)
         if(self.debug):
             rospy.loginfo_throttle(1, 'SC| Snapshot success!')
@@ -940,7 +942,9 @@ class SoundcamROS(object):
 
     def prepareMissionDirectory(self):
         if(self.prevUUID != self.missionData.uuid):
-            self.utils.prepareDirectory(str(self.missionData.id), self.missionData.name)
+            self.utils.prepareDirectory(str(self.missionData.id), 
+                                        self.missionData.name, 
+                                        self.missionData.result_dir)
             self.prevUUID = self.missionData.uuid
             if(self.debug):
                 rospy.loginfo('UUID - %s' % self.missionData.uuid)
