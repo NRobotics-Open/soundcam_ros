@@ -6,7 +6,7 @@ from datetime import datetime
 from dataclasses import dataclass
 import yaml
 import cv2, os, math
-from typing import NamedTuple, List, Dict
+from typing import NamedTuple, List
 import numpy as np
 import soundfile as sf
 from utils import SignalInfo
@@ -22,18 +22,17 @@ class MissionData:
 
 class ROSLayerUtils(object):
     PoseInfo = NamedTuple('PoseInfo', [('x', float), ('y', float), ('theta', float)])
-    Pose3dInfo = NamedTuple('Pose3dInfo', [('x', float), ('y', float), ('z', float)])
+    Pose3dInfo = NamedTuple('Pose3dInfo', [('world_x', float), ('world_y', float), ('world_z', float)])
     WaypointInfo = NamedTuple('WaypointInfo', [('id', int), ('x', float), ('y', float), ('theta', float)])
     DataPoint = NamedTuple('DataPoint', [('id', int), ('x', float), ('y', float), ('theta', float), 
                                          ('media', List),  
                                          ('mean_energy', float), ('std_dev', float),
                                          ('hi_thresh', float), ('current_energy', float), 
                                          ('lo_thresh', float), ('acoustic_energy', float), 
-                                         ('snr', float), ('pre_activation', bool), 
-                                         ('detection', bool),
+                                         ('snr', float), ('pre_activation', bool), ('detection', bool),
                                          ('isSolved', bool), ('relevant_image', int),
                                          ('leak_rate', float), ('leak_state', int),
-                                         ('world_point', Dict),
+                                         ('world_x', float), ('world_y', float), ('world_z', float),
                                          ('presetName', str), ('maximumFrequency', int), ('minimumFrequency', int),
                                          ('distance', float), ('crest', float), ('dynamic', float), ('maximum', float)])
     TileInfo = NamedTuple('TileInfo', [('id', int), ('relId', int)])
@@ -131,7 +130,7 @@ class ROSLayerUtils(object):
                                                 *sigInfo,
                                                 False, int(relevantIdx), 
                                                 *leakData, 
-                                                world_point=pose3dInfo._asdict(),
+                                                *pose3dInfo,
                                                 *preset_dt)
             obj = self.convert_numpy_types(obj._asdict())
             path = self.getPath(fetchMsnDir=useMsnPath)

@@ -1008,8 +1008,9 @@ class SoundcamROS(object):
         can_proceed = True
         while(not self.camera.isDetectionReady()):
             rospy.loginfo_throttle(5, "Awaiting detection algorithm to resume ...")
-            if((time.time() - start_t) >= 5.0):
+            if((time.time() - start_t) >= 10.0):
                 can_proceed = False
+                result = False
                 rospy.logerr("SC| Camera in Error!")
                 rospy.logerr("SC| Goal will be aborted!")
                 break
