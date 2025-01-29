@@ -1,4 +1,6 @@
 <?xml version="1.0"?>
 <launch>
   <node name="soundcam_node" pkg="soundcam_ros" type="soundcam_ros_node.py" output="screen" />
+  <!--Publish soundcam frame with respect to pantilt center-->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="camera0_broadcaster" args="0.0 0.0 0.0 -1.57079633 0 -1.57079633 pantilt_link soundcam" />
 </launch>
