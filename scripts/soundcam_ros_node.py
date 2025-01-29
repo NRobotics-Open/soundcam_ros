@@ -415,14 +415,14 @@ class SoundcamROS(object):
                         #find different point logic here
                         dist = self.utils.calcEuclidDistance([cur_blob.cx, cur_blob.cy], [blob.cx, blob.cy])
                         if(dist > self.cfg['get_world_coord_offset']):
-                            cur_blob = blob
+                            cur_blob = BlobInfo(*blob)
                         else:
                             continue
                     else:
-                        cur_blob = blob
+                        cur_blob = BlobInfo(*blob)
                     
-                    req.imagepoint_x = blob.cx
-                    req.imagepoint_y = blob.cy
+                    req.imagepoint_x = cur_blob.cx
+                    req.imagepoint_y = cur_blob.cy
                     res:GetWorldPointFromImagePointResponse = get_3d_coordinate(req)
                     if(res.success):
                         return ROSLayerUtils.Pose3dInfo(res.point.point.x, res.point.point.y, res.point.point.z)
