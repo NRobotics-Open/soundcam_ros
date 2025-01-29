@@ -81,6 +81,8 @@ class SoundcamROS(object):
         self.tileLock = Lock()
         self.runCmp = Event()
         self.runCmp.clear()
+        self.changingPreset = Event()
+        self.changingPreset.clear()
         
         #static image caches
         self.overlayed_img = None
@@ -417,18 +419,22 @@ class SoundcamROS(object):
                 if(self.camera.restartCamera()):
                     self.setPreset(self.curPreset) #reset preset
                 self.trigger_reset = False
+                self.changingPreset.clear()
             time.sleep(1.0)
     
     def setPreset(self, preset:Preset):
         if(preset.presetName == self.curPreset.presetName):
             return True
-        return self.camera.updatePreset(mode=int(preset.scalingMode),
+        if(self.camera.updatePreset(mode=int(preset.scalingMode),
                                         distance=int(preset.distance),
                                         minFreq=int(preset.minFrequency),
                                         maxFreq=int(preset.maxFrequency),
                                         dynamic=float(preset.dynamic),
                                         crest=float(preset.crest),
-                    maximum=float(preset.maximum) if (float(preset.maximum) > 0.0) else None)
+                    maximum=float(preset.maximum) if (float(preset.maximum) > 0.0) else None)):
+            self.curPreset = preset
+            return True
+        return False
                 
     def subRobotPose(self, msg:Pose):
         try:
@@ -824,14 +830,17 @@ class SoundcamROS(object):
             if(self.setPreset(req.preset)):
                 rospy.loginfo('Preset sent!')
                 start_t = time.time()
+                self.changingPreset.set()
                 while(not self.camera.isDetectionReady()):
                     rospy.loginfo_throttle(5, "Awaiting Detection algo ...")
-                    if((time.time() - start_t) >= 10.0):
+                    if((time.time() - start_t) >= 20.0):
                         rospy.logwarn("Camera stream taking longer to resume \
                                     \nCamera might be in Error!")
                         rospy.loginfo("Camera will be restarted ...")
                         self.trigger_reset = True
                         break
+                rospy.loginfo("Completed!")
+                self.changingPreset.clear()
             else:
                 rospy.logerr('Preset change failed!')
                 if(not self.camera.isMeasuring()):
@@ -863,7 +872,7 @@ class SoundcamROS(object):
                     ("CONFIG" if (req.command_type == SoundcamServiceRequest.CMD_TYPE_CONFIG) else "OP"))
             rospy.loginfo("\t CaptureTime: %f" % req.captureTime)
             if(req.preset.hasPreset):
-                rospy.loginfo("\t Preset: ")
+                rospy.loginfo("\t Preset: %s" % req.preset.presetName)
                 rospy.loginfo("\t\t Scaling Mode: %f" % req.preset.scalingMode)
                 rospy.loginfo("\t\t Crest: %f" % req.preset.crest)
                 rospy.loginfo("\t\t Distance: %f" % req.preset.distance)
@@ -1283,8 +1292,13 @@ class SoundcamROS(object):
 
                 self.publishDetection(self.signalInfo, self.camera.getBlobData(), 
                                       self.leakInfo)
-
+                
                 if((time.time() - alive_t) >= 1.0):
+                    if(self.changingPreset.is_set()):
+                        alive_t = time.time()
+                        rospy.loginfo('Waiting for preset change to finish ...')
+                        continue
+
                     if(not self.camera.isAlive()):
                         rospy.logwarn_throttle(1.0, '[X] Camera disconnected!')
                         if(not disconnect_ev):
