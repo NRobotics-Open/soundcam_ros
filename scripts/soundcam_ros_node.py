@@ -387,24 +387,54 @@ class SoundcamROS(object):
         pub.publish(compressed_image_msg)
 
     ''' Converts 2D Image coordinates to 3D World coordinates '''
-    def getWorldCoordinates(self, blob:BlobInfo)->ROSLayerUtils.Pose3dInfo:
+    def getWorldCoordinates(self)->ROSLayerUtils.Pose3dInfo:
         rospy.wait_for_service(self.cfg['world_coord_service_name'], timeout=rospy.Duration(3.0))
-        try:
-            get_3d_coordinate = rospy.ServiceProxy(self.cfg['world_coord_service_name'], GetWorldPointFromImagePoint)
-            req = GetWorldPointFromImagePointRequest()
-            if(self.cameraInfo is not None):
-                req.camera_info = self.cameraInfo
-            else:
-                req.camera_info_topic = self.caminfo_pub.resolved_name
-            req.imagepoint_x = blob.cx
-            req.imagepoint_y = blob.cy
-            res:GetWorldPointFromImagePointResponse = get_3d_coordinate(req)
-            if(res.success):
-                return ROSLayerUtils.Pose3dInfo(res.point.point.x, res.point.point.y, res.point.point.z)
-            return ROSLayerUtils.Pose3dInfo(0.0, 0.0, 0.0)
-        except rospy.ServiceException as e:
-            rospy.logerr("[GetWorldCoordinateService] failed: %s" %e)
-            return ROSLayerUtils.Pose3dInfo(0.0, 0.0, 0.0)
+        get_3d_coordinate = rospy.ServiceProxy(self.cfg['world_coord_service_name'], GetWorldPointFromImagePoint)
+        req = GetWorldPointFromImagePointRequest()
+        if(self.cameraInfo is not None):
+            req.camera_info = self.cameraInfo
+        else:
+            req.camera_info_topic = self.caminfo_pub.resolved_name
+        req.point_cloud_topic = self.cfg['world_coord_pcl_topic']
+        cur_blob = None
+        start_t = time.time()
+        cnt = 1
+        max_retry = 3
+        while((time.time() - start_t) < self.cfg['get_world_coord_timeout']):
+            try:
+                blobs:List[BlobInfo] = self.camera.getBlobData()
+                if(len(blobs) == 0):
+                    if(cnt > max_retry):
+                        break
+                    start_t = time.time()
+                    cnt += 1
+                    continue
+
+                for blob in blobs:
+                    if(cur_blob is not None):
+                        #find different point logic here
+                        dist = self.utils.calcEuclidDistance([cur_blob.cx, cur_blob.cy], [blob.cx, blob.cy])
+                        if(dist > self.cfg['get_world_coord_offset']):
+                            cur_blob = blob
+                        else:
+                            continue
+                    else:
+                        cur_blob = blob
+                    
+                    req.imagepoint_x = blob.cx
+                    req.imagepoint_y = blob.cy
+                    res:GetWorldPointFromImagePointResponse = get_3d_coordinate(req)
+                    if(res.success):
+                        return ROSLayerUtils.Pose3dInfo(res.point.point.x, res.point.point.y, res.point.point.z)
+
+                if(cnt > max_retry):
+                    break
+                start_t = time.time()
+                cnt += 1
+            except rospy.ServiceException as e:
+                rospy.logerr("[GetWorldCoordinateService] failed: %s" %e)
+                return ROSLayerUtils.Pose3dInfo(0.0, 0.0, 0.0)
+        return ROSLayerUtils.Pose3dInfo(0.0, 0.0, 0.0)
     
     ''' Triggers blob centering '''
     def centerBlob(self, blobs:List[BlobInfo])-> Tuple[bool, int]:
@@ -966,8 +996,8 @@ class SoundcamROS(object):
                 with self.signalLock:
                     siginfo = self.signalInfo._asdict()
                     prv_siginfo = self.signalInfo_cb._asdict()
-                    leak_info = self.leakInfo_cb._asdict()
-                    cur_leak_info = self.camera.getLeakInfo()._asdict()
+                    # leak_info = self.leakInfo_cb._asdict()
+                    # cur_leak_info = self.camera.getLeakInfo()._asdict()
 
                 if(prv_siginfo['mean_energy'] == 0.0 and 
                 prv_siginfo['std_dev'] == 0.0 and 
@@ -996,14 +1026,14 @@ class SoundcamROS(object):
                         tile_i = self.tileInfo._asdict()
                         tile_i['relId'] = tile_i['id']
                         self.tileInfo = ROSLayerUtils.TileInfo(**tile_i)
-                if(cur_leak_info['leak_state'] > 0): #if current reading centered
-                    if((cur_leak_info['leak_rate'] > leak_info['leak_rate'])):
-                        leak_info['leak_rate'] = cur_leak_info['leak_rate']
-                else: #if current reading not centered
-                    if((leak_info['leak_state'] == 0) and (cur_leak_info['leak_rate'] > leak_info['leak_rate'])):
-                        leak_info['leak_rate'] = cur_leak_info['leak_rate']
+                # if(cur_leak_info['leak_state'] > 0): #if current reading centered
+                #     if((cur_leak_info['leak_rate'] > leak_info['leak_rate'])):
+                #         leak_info['leak_rate'] = cur_leak_info['leak_rate']
+                # else: #if current reading not centered
+                #     if((leak_info['leak_state'] == 0) and (cur_leak_info['leak_rate'] > leak_info['leak_rate'])):
+                #         leak_info['leak_rate'] = cur_leak_info['leak_rate']
                 
-                self.leakInfo_cb = LeakInfo(**leak_info)
+                # self.leakInfo_cb = LeakInfo(**leak_info)
                 self.signalInfo_cb = SignalInfo(**prv_siginfo)
 
             else:
@@ -1093,18 +1123,16 @@ class SoundcamROS(object):
             rospy.loginfo('Processing goal ...')
             while(not rospy.is_shutdown()):
                 if((recordTime <= self.cfg['min_record_time']) and (numCaptures > 0)): #Take Snapshots
-                    blobs:List[BlobInfo] = self.camera.getBlobData()
-                    if(self.cfg['center_blob']):
-                        (res, idx) = self.centerBlob(blobs)
+                    # if(self.cfg['center_blob']):
+                    #     (res, idx) = self.centerBlob(blobs)
                     if(self.cfg['get_world_coordinate']):
-                        if(len(blobs) > 0):
-                            pose3d = ROSLayerUtils.Pose3dInfo(*self.getWorldCoordinates(blob=blobs[idx]))
+                        pose3d = ROSLayerUtils.Pose3dInfo(*self.getWorldCoordinates())
                     with self.signalLock:
                         with self.tileLock:
                             res = self._takeSnapshot(streamType=streamType, 
                                           wpInfo=wpInfo, sigInfo=SignalInfo(*self.signalInfo_cb),
                                           tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo),
-                                          leakInfo=LeakInfo(*self.leakInfo_cb), 
+                                          leakInfo=LeakInfo(*self.leakInfo), 
                                           pose3dInfo=ROSLayerUtils.Pose3dInfo(*pose3d))
                     if(res):
                         cnt += 1

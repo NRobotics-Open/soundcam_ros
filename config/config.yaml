@@ -82,6 +82,8 @@ estimate_leak: False
 get_world_coordinate: False
 world_coord_service_name: '/Image2WorldPointService'
 world_coord_pcl_topic: '/livox/lidar'
+get_world_coord_offset: 50 #pixel distance
+get_world_coord_timeout: 5
 
 center_blob: False
 

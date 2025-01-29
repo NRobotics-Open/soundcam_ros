@@ -31,8 +31,8 @@ class ROSLayerUtils(object):
                                          ('lo_thresh', float), ('acoustic_energy', float), 
                                          ('snr', float), ('pre_activation', bool), ('detection', bool),
                                          ('isSolved', bool), ('relevant_image', int),
-                                         ('leak_rate', float), ('leak_state', int),
-                                         ('world_x', float), ('world_y', float), ('world_z', float),
+                                         ('leak_rates', List),
+                                         ('world_points', List),
                                          ('presetName', str), ('maximumFrequency', int), ('minimumFrequency', int),
                                          ('distance', float), ('crest', float), ('dynamic', float), ('maximum', float)])
     TileInfo = NamedTuple('TileInfo', [('id', int), ('relId', int)])
@@ -115,22 +115,27 @@ class ROSLayerUtils(object):
             if(preset is not None):
                 preset_dt = (preset.presetName, preset.maxFrequency, preset.minFrequency,
                              preset.distance, preset.crest, preset.dynamic, preset.maximum)
-            if(leakData is None):
-                if((sigInfo.acoustic_energy > 0.0) and (sigInfo.detection)):
-                    #calculate estimated leakrate
-                    print('Estimating leak rate')
-                else:
-                    leakData = LeakInfo(0.0, 0)
-            if(pose3dInfo is None):
+            leak_dataLs = list()
+            if(leakData is not None):
+                leak_dataLs.append(leakData._asdict())
+            else:
+                leakData = LeakInfo(0.0, 0)
+                leak_dataLs.append(leakData._asdict())
+            
+            world_pointsLs = list()
+            if(pose3dInfo is not None):
+                world_pointsLs.append(pose3dInfo._asdict())
+            else:
                 pose3dInfo = ROSLayerUtils.Pose3dInfo(0.0, 0.0, 0.0)
+                world_pointsLs.append(pose3dInfo._asdict())
             
             obj:ROSLayerUtils.DataPoint = ROSLayerUtils.DataPoint(
                                                 *wpInfo, 
                                                 media,
                                                 *sigInfo,
                                                 False, int(relevantIdx), 
-                                                *leakData, 
-                                                *pose3dInfo,
+                                                leak_dataLs, 
+                                                world_pointsLs,
                                                 *preset_dt)
             obj = self.convert_numpy_types(obj._asdict())
             path = self.getPath(fetchMsnDir=useMsnPath)
@@ -164,8 +169,12 @@ class ROSLayerUtils(object):
                         hasId = True
                         for dt in obj['media']:
                             obj_old['media'].append(dt)
-                            # update signal Parameters
-                            obj_old = updateDict(existing_obj=obj_old, cur_obj=obj)
+                        for wpt in obj['world_points']:
+                            obj_old['world_points'].append(wpt)
+                        for lk_d in obj['leak_rates']:
+                            obj_old['leak_rates'].append(lk_d)
+                        # update signal Parameters
+                        obj_old = updateDict(existing_obj=obj_old, cur_obj=obj)
                         break
                 if(not hasId):
                     self.metaData[loop]['actionpoints'].append(obj)
@@ -176,6 +185,10 @@ class ROSLayerUtils(object):
                         hasId = True
                         for dt in obj['media']:
                             obj_old['media'].append(dt)
+                        for wpt in obj['world_points']:
+                            obj_old['world_points'].append(wpt)
+                        for lk_d in obj['leak_rates']:
+                            obj_old['leak_rates'].append(lk_d)
                         # update signal Parameters
                         obj_old = updateDict(existing_obj=obj_old, cur_obj=obj)
                         break
