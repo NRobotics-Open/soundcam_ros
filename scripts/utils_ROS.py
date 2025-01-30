@@ -138,13 +138,14 @@ class ROSLayerUtils(object):
                                                 world_pointsLs,
                                                 *preset_dt)
             obj = self.convert_numpy_types(obj._asdict())
+            print('Current Object: ', obj)
             path = self.getPath(fetchMsnDir=useMsnPath)
             loop = str(loop)
             #print('Current Loop is: ', loop)
             if(os.path.exists(os.path.join(path, 'meta-data.yaml'))): #read meta data file
                 with open(os.path.join(path, 'meta-data.yaml') , 'r') as infofile:
                     self.metaData = yaml.safe_load(infofile)
-                    #print('MetaData: ', self.metaData)
+                    print('\nMetaData: ', self.metaData)
                     #check by the current loop
                     if((self.metaData is not None) and (loop not in self.metaData.keys())):
                         self.metaData[loop] = {'datapoints':[], 'actionpoints':[]}
@@ -159,7 +160,6 @@ class ROSLayerUtils(object):
                 existing_obj['relevant_image'] = cur_obj['relevant_image']
                 existing_obj['snr'] = cur_obj['snr']
                 existing_obj['std_dev'] = cur_obj['std_dev']
-                existing_obj['leak_rate'] = cur_obj['leak_rate']
                 return existing_obj
         
             hasId = False
@@ -167,14 +167,19 @@ class ROSLayerUtils(object):
                 for obj_old in self.metaData[loop]['actionpoints']: #check if actionpoint in metadata
                     if(obj_old['id'] == wpInfo.id):
                         hasId = True
+                        print('Existing id found')
                         for dt in obj['media']:
+                            print('adding media files')
                             obj_old['media'].append(dt)
                         for wpt in obj['world_points']:
+                            print('adding world points')
                             obj_old['world_points'].append(wpt)
                         for lk_d in obj['leak_rates']:
+                            print('adding leak rates')
                             obj_old['leak_rates'].append(lk_d)
                         # update signal Parameters
                         obj_old = updateDict(existing_obj=obj_old, cur_obj=obj)
+                        print('Updated Object: ', obj_old)
                         break
                 if(not hasId):
                     self.metaData[loop]['actionpoints'].append(obj)
@@ -197,6 +202,7 @@ class ROSLayerUtils(object):
                 self.localId += 1
 
             with open(os.path.join(path, 'meta-data.yaml') , 'w') as infofile: #write meta data file
+                print('\n Full output: ', self.metaData)
                 yaml.dump(self.metaData, infofile)
             return True
         except Exception as e:

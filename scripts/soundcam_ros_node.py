@@ -75,6 +75,7 @@ class SoundcamROS(object):
         self.signalInfo_cb:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.signalInfo:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         self.tileInfo:ROSLayerUtils.TileInfo = ROSLayerUtils.TileInfo(0, 0)
+        self.tileInfo_cb:ROSLayerUtils.TileInfo = ROSLayerUtils.TileInfo(*self.tileInfo)
         self.leakInfo:LeakInfo = LeakInfo(0.0, 0.0)
         self.leakInfo_cb:LeakInfo = LeakInfo(*self.leakInfo)
         self.signalLock = Lock()
@@ -622,6 +623,9 @@ class SoundcamROS(object):
                         else:
                             sfx = ''.join(['OV_', str(tileInfo.id)])
                             filename = self.utils.getUniqueName(suffix=sfx)
+                    
+                    self.utils.createSnapshotFromFrame(frame, filename)
+                    media.append(filename)
                 except Exception as e:
                     rospy.logerr('SC| Error taking BW/THM/OV snapshot: ', e)
                     return False
@@ -996,6 +1000,7 @@ class SoundcamROS(object):
                 with self.signalLock:
                     siginfo = self.signalInfo._asdict()
                     prv_siginfo = self.signalInfo_cb._asdict()
+                    prv_tileinfo = self.tileInfo_cb._asdict()
                     # leak_info = self.leakInfo_cb._asdict()
                     # cur_leak_info = self.camera.getLeakInfo()._asdict()
 
@@ -1023,9 +1028,8 @@ class SoundcamROS(object):
                 if(siginfo['acoustic_energy'] > prv_siginfo['acoustic_energy']):
                     prv_siginfo['acoustic_energy'] = siginfo['acoustic_energy']
                     with self.tileLock:
-                        tile_i = self.tileInfo._asdict()
-                        tile_i['relId'] = tile_i['id']
-                        self.tileInfo = ROSLayerUtils.TileInfo(**tile_i)
+                        cur_tile = self.tileInfo._asdict()
+                        prv_tileinfo['relId'] = cur_tile['id']
                 # if(cur_leak_info['leak_state'] > 0): #if current reading centered
                 #     if((cur_leak_info['leak_rate'] > leak_info['leak_rate'])):
                 #         leak_info['leak_rate'] = cur_leak_info['leak_rate']
@@ -1035,6 +1039,7 @@ class SoundcamROS(object):
                 
                 # self.leakInfo_cb = LeakInfo(**leak_info)
                 self.signalInfo_cb = SignalInfo(**prv_siginfo)
+                self.tileInfo_cb = ROSLayerUtils.TileInfo(**prv_tileinfo)
 
             else:
                 time.sleep(0.1)
@@ -1077,6 +1082,7 @@ class SoundcamROS(object):
                         media = [int(x) for x in param.value.split('|')]
                         if(SoundcamServiceRequest.ALL not in media):
                             streamType = media
+                            rospy.loginfo('Using streamType: ', streamType)
                 if(param.key == 'missionId'):
                     self.missionData.id = int(param.value)
                 if(param.key == 'missionName'):
@@ -1111,14 +1117,16 @@ class SoundcamROS(object):
             cnt = 1
             idx = 0 #resulting id from blob_tracker node
 
-            if(self.tileInfo.id <= 1):
+            if(self.tileInfo.id < 1):
                 with self.signalLock:
                     self.signalInfo_cb:SignalInfo = SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
+                with self.tileLock:
+                    self.tileInfo_cb:ROSLayerUtils.TileInfo = ROSLayerUtils.TileInfo(0, 0)
             
             #prepare directory
             self.prepareMissionDirectory()
             self.runCmp.set() #activates detectCompare thread
-            time.sleep(1.0)
+            time.sleep(1.5)
             
             rospy.loginfo('Processing goal ...')
             while(not rospy.is_shutdown()):
@@ -1131,15 +1139,15 @@ class SoundcamROS(object):
                         with self.tileLock:
                             res = self._takeSnapshot(streamType=streamType, 
                                           wpInfo=wpInfo, sigInfo=SignalInfo(*self.signalInfo_cb),
-                                          tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo),
+                                          tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo_cb),
                                           leakInfo=LeakInfo(*self.leakInfo), 
                                           pose3dInfo=ROSLayerUtils.Pose3dInfo(*pose3d))
                     if(res):
-                        cnt += 1
                         self.act_feedbk.capture_count = cnt
                         self.act_feedbk.currentTime.data = rospy.Time.now()
                         self.act_srvr.publish_feedback(self.act_feedbk)
                         time.sleep(delay)
+                        cnt += 1
                     else:
                         rospy.logerr('SC| Snapshot failed!')
                         break
