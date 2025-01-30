@@ -1082,7 +1082,7 @@ class SoundcamROS(object):
                         media = [int(x) for x in param.value.split('|')]
                         if(SoundcamServiceRequest.ALL not in media):
                             streamType = media
-                            rospy.loginfo('Using streamType: ', streamType)
+                            #print('Using streamType: ', streamType)
                 if(param.key == 'missionId'):
                     self.missionData.id = int(param.value)
                 if(param.key == 'missionName'):
