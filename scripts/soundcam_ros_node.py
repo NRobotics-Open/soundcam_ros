@@ -1025,7 +1025,8 @@ class SoundcamROS(object):
                     prv_siginfo['hi_thresh'] = siginfo['hi_thresh']
                 if(siginfo['lo_thresh'] > prv_siginfo['lo_thresh']):
                     prv_siginfo['lo_thresh'] = siginfo['lo_thresh']
-                if(siginfo['acoustic_energy'] > prv_siginfo['acoustic_energy']):
+                if((siginfo['acoustic_energy'] > prv_siginfo['acoustic_energy']) and 
+                   siginfo['detection']):
                     prv_siginfo['acoustic_energy'] = siginfo['acoustic_energy']
                     with self.tileLock:
                         cur_tile = self.tileInfo._asdict()
