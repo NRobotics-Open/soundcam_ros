@@ -1139,7 +1139,7 @@ class SoundcamROS(object):
                         with self.tileLock:
                             res = self._takeSnapshot(streamType=streamType, 
                                           wpInfo=wpInfo, sigInfo=SignalInfo(*self.signalInfo_cb),
-                                          tileInfo=ROSLayerUtils.TileInfo(*self.tileInfo_cb),
+                                          tileInfo=ROSLayerUtils.TileInfo(self.tileInfo.id, self.tileInfo_cb.relId),
                                           leakInfo=LeakInfo(*self.leakInfo), 
                                           pose3dInfo=ROSLayerUtils.Pose3dInfo(*pose3d))
                     if(res):
