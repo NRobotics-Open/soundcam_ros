@@ -369,7 +369,8 @@ class SoundUtils():
                 self.trigger_time = time.time()
                 return SignalInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
             # Check if current energy exceeds the high threshold to trigger a new detection
-            if ((ac_energy >= self.trigger_thresh)): #or (current_energy > high_threshold)
+            if (((ac_energy >= self.trigger_thresh) or (current_energy > high_threshold)) and 
+                (ac_energy > 0.0)):
                 self.pre_activation = True
                 self.elapsed_t = time.time()-self.trigger_time
                 if(self.elapsed_t >= self.trigger_duration):
